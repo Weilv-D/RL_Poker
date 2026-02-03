@@ -46,12 +46,6 @@ source .venv/bin/activate
 pip install -e .
 ```
 
-可选：
-
-```bash
-pip install tensorboard
-```
-
 ## 快速开始
 
 ```bash

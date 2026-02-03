@@ -25,9 +25,6 @@ HIDDEN_SIZE="${HIDDEN_SIZE:-256}"
 LEARNING_RATE="${LEARNING_RATE:-3e-4}"
 SEED="${SEED:-42}"
 CHECKPOINT_DIR="${CHECKPOINT_DIR:-${PROJECT_ROOT}/checkpoints}"
-LOG_DIR="${LOG_DIR:-${PROJECT_ROOT}/runs}"
-TB_HOST="${TB_HOST:-127.0.0.1}"
-TB_PORT="${TB_PORT:-6006}"
 QUALITY=0
 QUALITY_EXTRA_ARGS=()
 
@@ -108,11 +105,6 @@ while [[ $# -gt 0 ]]; do
                 --shaping-alpha 0.1
                 --shaping-anneal-updates 500
                 --log-interval 1
-                --tb-interval 1
-                --tb-detail-interval 10
-                --tb-hist-interval 50
-                --tb-max-queue 2000
-                --tb-flush-secs 30
                 --save-interval 50
             )
             shift
@@ -130,28 +122,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Create directories
-mkdir -p "$CHECKPOINT_DIR" "$LOG_DIR"
-
-# TensorBoard management
-TB_PID=""
-start_tensorboard() {
-    # Check if tensorboard is available
-    if "$PYTHON" -c "import tensorboard" 2>/dev/null; then
-        "$PYTHON" -m tensorboard.main --logdir "$LOG_DIR" --host "$TB_HOST" --port "$TB_PORT" \
-            >"$LOG_DIR/tensorboard.log" 2>&1 &
-        TB_PID=$!
-        echo "📊 TensorBoard: http://$TB_HOST:$TB_PORT"
-    else
-        echo "⚠️  TensorBoard not installed. Install with: pip install tensorboard"
-    fi
-}
-
-cleanup() {
-    if [[ -n "$TB_PID" ]]; then
-        kill "$TB_PID" 2>/dev/null || true
-    fi
-}
-trap cleanup EXIT
+mkdir -p "$CHECKPOINT_DIR"
 
 # Print configuration
 echo "🎮 RL Poker GPU Training"
@@ -164,9 +135,6 @@ echo "Learning rate: $LEARNING_RATE"
 echo "Seed:         $SEED"
 echo ""
 
-# Start TensorBoard
-start_tensorboard
-
 # Run training
 "$PYTHON" -m rl_poker.scripts.train \
     --num-envs "$NUM_ENVS" \
@@ -176,11 +144,9 @@ start_tensorboard
     --learning-rate "$LEARNING_RATE" \
     --seed "$SEED" \
     --checkpoint-dir "$CHECKPOINT_DIR" \
-    --log-dir "$LOG_DIR" \
     "${QUALITY_EXTRA_ARGS[@]}" \
     "${EXTRA_ARGS[@]}"
 
 echo ""
 echo "✅ Training complete!"
 echo "Checkpoints: $CHECKPOINT_DIR"
-echo "Logs: $LOG_DIR"
