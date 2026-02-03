@@ -18,15 +18,30 @@ if [[ -z "$PYTHON" ]]; then
         PYTHON="python"
     fi
 fi
-NUM_ENVS="${NUM_ENVS:-128}"
-TOTAL_TIMESTEPS="${TOTAL_TIMESTEPS:-2000000}"
-ROLLOUT_STEPS="${ROLLOUT_STEPS:-128}"
+NUM_ENVS="${NUM_ENVS:-1024}"
+TOTAL_TIMESTEPS="${TOTAL_TIMESTEPS:-65536000}"
+ROLLOUT_STEPS="${ROLLOUT_STEPS:-64}"
 HIDDEN_SIZE="${HIDDEN_SIZE:-256}"
-LEARNING_RATE="${LEARNING_RATE:-3e-4}"
+LEARNING_RATE="${LEARNING_RATE:-2.5e-4}"
 SEED="${SEED:-42}"
 CHECKPOINT_DIR="${CHECKPOINT_DIR:-${PROJECT_ROOT}/checkpoints}"
 QUALITY=0
 QUALITY_EXTRA_ARGS=()
+DEFAULT_EXTRA_ARGS=(
+    --ppo-epochs 4
+    --num-minibatches 64
+    --gru-hidden 128
+    --history-window 32
+    --pool-max-size 32
+    --pool-add-interval 5
+    --pool-psro-beta 5.0
+    --pool-min-prob 0.03
+    --pool-heuristic-styles conservative,aggressive,rush,counter,variance
+    --shaping-alpha 0.1
+    --shaping-anneal-updates 500
+    --log-interval 1
+    --save-interval 50
+)
 
 usage() {
     cat << 'EOF'
@@ -36,11 +51,11 @@ Usage: ./scripts/train_gpu.sh [options]
 
 Options (key only):
     --quality              Quality-first preset for 8GB GPUs (override defaults)
-    --num-envs N           Number of parallel environments (default: 128)
-    --total-timesteps N    Total training timesteps (default: 2000000)
-    --rollout-steps N      Steps per rollout (default: 128)
+    --num-envs N           Number of parallel environments (default: 1024)
+    --total-timesteps N    Total training timesteps (default: 65536000)
+    --rollout-steps N      Steps per rollout (default: 64)
     --hidden-size N        Network hidden size (default: 256)
-    --learning-rate LR     Learning rate (default: 3e-4)
+    --learning-rate LR     Learning rate (default: 2.5e-4)
     --seed N               Random seed (default: 42)
     --pool-max-size N      Opponent pool size cap (default: 16)
     --pool-add-interval N  Snapshot add interval (default: 10)
@@ -62,16 +77,16 @@ Options (key only):
 
 Examples:
   # Quick test (5 minutes)
-  ./scripts/train_gpu.sh --total-timesteps 100000
+  ./scripts/train_gpu.sh --total-timesteps 1000000 --num-envs 256 --rollout-steps 64
 
   # Quality-first (recommended)
   ./scripts/train_gpu.sh --quality
 
   # Standard training (1 hour)
-  ./scripts/train_gpu.sh --total-timesteps 10000000 --num-envs 256
+  ./scripts/train_gpu.sh --total-timesteps 10000000 --num-envs 512 --rollout-steps 64
 
   # Long training (7 hours) with larger network
-  ./scripts/train_gpu.sh --total-timesteps 100000000 --hidden-size 512
+  ./scripts/train_gpu.sh --total-timesteps 100000000 --hidden-size 512 --num-envs 1024
 
 Performance:
   - Expected SPS: ~10,000-15,000 on modern GPUs
@@ -144,6 +159,7 @@ echo ""
     --learning-rate "$LEARNING_RATE" \
     --seed "$SEED" \
     --checkpoint-dir "$CHECKPOINT_DIR" \
+    "${DEFAULT_EXTRA_ARGS[@]}" \
     "${QUALITY_EXTRA_ARGS[@]}" \
     "${EXTRA_ARGS[@]}"
 
