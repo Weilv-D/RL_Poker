@@ -96,7 +96,7 @@ class TrainConfig:
     belief_temp: float = 2.0
 
     # Logging
-    log_interval: int = 5
+    log_interval: int = 1
     save_interval: int = 50
     checkpoint_dir: str = "checkpoints"
     log_dir: str = "runs"
@@ -254,10 +254,32 @@ def train(config: TrainConfig):
     opponent_ids = pool.sample_opponents(config.num_envs, seats=3)
 
     # Logging
-    os.makedirs(config.checkpoint_dir, exist_ok=True)
-    os.makedirs(config.log_dir, exist_ok=True)
+    checkpoint_root = os.path.abspath(config.checkpoint_dir)
+    log_root = os.path.abspath(config.log_dir)
+    os.makedirs(checkpoint_root, exist_ok=True)
+    os.makedirs(log_root, exist_ok=True)
     run_name = f"rl_poker_{config.seed}_{int(time.time())}"
-    writer = SummaryWriter(os.path.join(config.log_dir, run_name))
+    run_log_dir = os.path.join(log_root, run_name)
+    os.makedirs(run_log_dir, exist_ok=True)
+    writer = SummaryWriter(run_log_dir)
+
+    def tb_add_scalar(tag: str, value: float, step: int) -> None:
+        nonlocal writer
+        try:
+            writer.add_scalar(tag, value, step)
+        except FileNotFoundError:
+            os.makedirs(run_log_dir, exist_ok=True)
+            writer = SummaryWriter(run_log_dir)
+            writer.add_scalar(tag, value, step)
+
+    def tb_add_histogram(tag: str, values: torch.Tensor, step: int) -> None:
+        nonlocal writer
+        try:
+            writer.add_histogram(tag, values, step)
+        except FileNotFoundError:
+            os.makedirs(run_log_dir, exist_ok=True)
+            writer = SummaryWriter(run_log_dir)
+            writer.add_histogram(tag, values, step)
 
     # Training state
     state = env.reset()
@@ -713,6 +735,9 @@ def train(config: TrainConfig):
         sum_policy = 0.0
         sum_value = 0.0
         sum_entropy = 0.0
+        sum_kl = 0.0
+        sum_clipfrac = 0.0
+        sum_grad_norm = 0.0
 
         for _epoch in range(config.ppo_epochs):
             for start in range(0, T * B, minibatch_size):
@@ -754,7 +779,7 @@ def train(config: TrainConfig):
 
                 optimizer.zero_grad()
                 loss.backward()
-                nn.utils.clip_grad_norm_(network.parameters(), config.max_grad_norm)
+                grad_norm = nn.utils.clip_grad_norm_(network.parameters(), config.max_grad_norm)
                 optimizer.step()
 
                 mb_count += 1
@@ -762,6 +787,9 @@ def train(config: TrainConfig):
                 sum_policy += float(policy_loss.item())
                 sum_value += float(value_loss.item())
                 sum_entropy += float(entropy.item())
+                sum_kl += float((mb_logp_old - new_logp).mean().item())
+                sum_clipfrac += float((torch.abs(ratio - 1.0) > config.clip_coef).float().mean().item())
+                sum_grad_norm += float(grad_norm.item())
 
         # Logging
         elapsed = time.time() - start_time
@@ -772,11 +800,35 @@ def train(config: TrainConfig):
             pool_evs = [entry.stats.ev_ema for entry in pool.entries]
             pool_mean_ev = float(np.mean(pool_evs)) if pool_evs else 0.0
             pool_min_ev = float(np.min(pool_evs)) if pool_evs else 0.0
+            pool_max_ev = float(np.max(pool_evs)) if pool_evs else 0.0
+            pool_std_ev = float(np.std(pool_evs)) if pool_evs else 0.0
             denom = max(1, mb_count)
             mean_loss = sum_loss / denom
             mean_policy_loss = sum_policy / denom
             mean_value_loss = sum_value / denom
             mean_entropy = sum_entropy / denom
+            mean_kl = sum_kl / denom
+            mean_clipfrac = sum_clipfrac / denom
+            mean_grad_norm = sum_grad_norm / denom
+
+            with torch.no_grad():
+                reward_mean = float(rew_buf_tensor.mean().item())
+                reward_std = float(rew_buf_tensor.std(unbiased=False).item())
+                reward_min = float(rew_buf_tensor.min().item())
+                reward_max = float(rew_buf_tensor.max().item())
+                return_mean = float(returns.mean().item())
+                return_std = float(returns.std(unbiased=False).item())
+                value_mean = float(val_buf_tensor.mean().item())
+                value_std = float(val_buf_tensor.std(unbiased=False).item())
+                adv_mean_val = float(adv_flat.mean().item())
+                adv_std_val = float(adv_flat.std(unbiased=False).item())
+                pass_rate = float((act_buf_tensor == 0).float().mean().item())
+
+                ret_var = returns.var(unbiased=False)
+                if ret_var.item() > 1e-8:
+                    exp_var = 1.0 - float(((returns - val_buf_tensor) ** 2).var(unbiased=False).item()) / float(ret_var.item())
+                else:
+                    exp_var = 0.0
 
             print(
                 f"Update {update}/{num_updates} | Steps: {total_steps:,} | Games: {total_games} | SPS: {sps:.0f} | Win%: {win_rate:.1f}% | Loss: {mean_loss:.4f} | Pool: {len(pool.entries)}"
@@ -784,16 +836,36 @@ def train(config: TrainConfig):
             if adv_norm_skipped:
                 print("Warning: advantage std too small; skipped normalization for this update.")
 
-            writer.add_scalar("charts/SPS", sps, total_steps)
-            writer.add_scalar("charts/games", total_games, total_steps)
-            writer.add_scalar("charts/win_rate_p0", win_rate, total_steps)
-            writer.add_scalar("pool/size", len(pool.entries), total_steps)
-            writer.add_scalar("pool/ev_mean", pool_mean_ev, total_steps)
-            writer.add_scalar("pool/ev_min", pool_min_ev, total_steps)
-            writer.add_scalar("losses/total", mean_loss, total_steps)
-            writer.add_scalar("losses/policy", mean_policy_loss, total_steps)
-            writer.add_scalar("losses/value", mean_value_loss, total_steps)
-            writer.add_scalar("losses/entropy", mean_entropy, total_steps)
+            tb_add_scalar("charts/SPS", sps, total_steps)
+            tb_add_scalar("charts/games", total_games, total_steps)
+            tb_add_scalar("charts/win_rate_p0", win_rate, total_steps)
+            tb_add_scalar("charts/pass_rate", pass_rate, total_steps)
+            tb_add_scalar("charts/approx_kl", mean_kl, total_steps)
+            tb_add_scalar("charts/clip_frac", mean_clipfrac, total_steps)
+            tb_add_scalar("charts/grad_norm", mean_grad_norm, total_steps)
+            tb_add_scalar("charts/explained_variance", exp_var, total_steps)
+            tb_add_scalar("charts/adv_mean", adv_mean_val, total_steps)
+            tb_add_scalar("charts/adv_std", adv_std_val, total_steps)
+            tb_add_scalar("charts/return_mean", return_mean, total_steps)
+            tb_add_scalar("charts/return_std", return_std, total_steps)
+            tb_add_scalar("charts/value_mean", value_mean, total_steps)
+            tb_add_scalar("charts/value_std", value_std, total_steps)
+            tb_add_scalar("pool/size", len(pool.entries), total_steps)
+            tb_add_scalar("pool/ev_mean", pool_mean_ev, total_steps)
+            tb_add_scalar("pool/ev_min", pool_min_ev, total_steps)
+            tb_add_scalar("pool/ev_max", pool_max_ev, total_steps)
+            tb_add_scalar("pool/ev_std", pool_std_ev, total_steps)
+            tb_add_scalar("rewards/mean", reward_mean, total_steps)
+            tb_add_scalar("rewards/std", reward_std, total_steps)
+            tb_add_scalar("rewards/min", reward_min, total_steps)
+            tb_add_scalar("rewards/max", reward_max, total_steps)
+            tb_add_scalar("losses/total", mean_loss, total_steps)
+            tb_add_scalar("losses/policy", mean_policy_loss, total_steps)
+            tb_add_scalar("losses/value", mean_value_loss, total_steps)
+            tb_add_scalar("losses/entropy", mean_entropy, total_steps)
+            tb_add_histogram("debug/advantages", adv_flat.detach().cpu(), total_steps)
+            tb_add_histogram("debug/returns", returns.detach().cpu(), total_steps)
+            tb_add_histogram("debug/values", val_buf_tensor.detach().cpu(), total_steps)
 
         # Save checkpoint
         if update % config.save_interval == 0:
@@ -887,7 +959,7 @@ def main():
     parser.add_argument("--belief-temp", type=float, default=2.0)
 
     # Logging
-    parser.add_argument("--log-interval", type=int, default=5)
+    parser.add_argument("--log-interval", type=int, default=1)
     parser.add_argument("--save-interval", type=int, default=50)
     parser.add_argument("--checkpoint-dir", type=str, default="checkpoints")
     parser.add_argument("--log-dir", type=str, default="runs")

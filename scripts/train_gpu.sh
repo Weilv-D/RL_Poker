@@ -4,6 +4,9 @@
 set -euo pipefail
 
 # Defaults
+# Resolve project root for stable absolute paths.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 # Prefer the active virtualenv if available; otherwise fall back to `python`.
 # Local override example (do not commit hard-coded paths):
 # PYTHON="/home/yourname/path/to/.venv/bin/python"
@@ -21,8 +24,8 @@ ROLLOUT_STEPS="${ROLLOUT_STEPS:-128}"
 HIDDEN_SIZE="${HIDDEN_SIZE:-256}"
 LEARNING_RATE="${LEARNING_RATE:-3e-4}"
 SEED="${SEED:-42}"
-CHECKPOINT_DIR="${CHECKPOINT_DIR:-checkpoints}"
-LOG_DIR="${LOG_DIR:-runs}"
+CHECKPOINT_DIR="${CHECKPOINT_DIR:-${PROJECT_ROOT}/checkpoints}"
+LOG_DIR="${LOG_DIR:-${PROJECT_ROOT}/runs}"
 TB_HOST="${TB_HOST:-127.0.0.1}"
 TB_PORT="${TB_PORT:-6006}"
 QUALITY=0
@@ -104,7 +107,7 @@ while [[ $# -gt 0 ]]; do
                 --pool-heuristic-styles conservative,aggressive,rush,counter,variance
                 --shaping-alpha 0.1
                 --shaping-anneal-updates 500
-                --log-interval 5
+                --log-interval 1
                 --save-interval 50
             )
             shift
