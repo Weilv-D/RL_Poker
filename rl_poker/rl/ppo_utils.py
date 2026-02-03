@@ -26,13 +26,10 @@ def compute_gae(
     """
     T = rewards.shape[0]
     advantages = torch.zeros_like(rewards)
-    lastgaelam = 0
+    lastgaelam = torch.zeros_like(rewards[0])
 
     for t in reversed(range(T)):
-        if t == T - 1:
-            next_values = values[t + 1]
-        else:
-            next_values = values[t + 1]
+        next_values = values[t + 1]
 
         not_done = 1.0 - dones[t].float()
         delta = rewards[t] + gamma * next_values * not_done - values[t]

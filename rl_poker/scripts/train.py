@@ -269,8 +269,35 @@ def train(config: TrainConfig):
 
     # Calculate update counts
     batch_size = config.num_envs * config.rollout_steps
-    num_updates = config.total_timesteps // batch_size
-    minibatch_size = batch_size // config.num_minibatches
+    if batch_size <= 0:
+        raise ValueError("batch_size must be positive")
+    if config.total_timesteps < batch_size:
+        print(
+            f"Warning: total_timesteps ({config.total_timesteps}) < batch_size ({batch_size}); "
+            "running a single update."
+        )
+        num_updates = 1
+    else:
+        num_updates = max(1, config.total_timesteps // batch_size)
+        if config.total_timesteps % batch_size != 0:
+            print(
+                f"Warning: total_timesteps ({config.total_timesteps}) not divisible by "
+                f"batch_size ({batch_size}); effective timesteps = {num_updates * batch_size}."
+            )
+
+    if config.num_minibatches <= 0:
+        raise ValueError("num_minibatches must be >= 1")
+    if config.num_minibatches > batch_size:
+        raise ValueError(
+            f"num_minibatches ({config.num_minibatches}) > batch_size ({batch_size}); "
+            "reduce num_minibatches or increase batch size."
+        )
+    if batch_size % config.num_minibatches != 0:
+        print(
+            f"Warning: batch_size ({batch_size}) not divisible by num_minibatches "
+            f"({config.num_minibatches}); last minibatch will be smaller."
+        )
+    minibatch_size = max(1, batch_size // config.num_minibatches)
 
     print(f"\nTraining for {num_updates} updates...")
     print(f"Batch size: {batch_size}, Minibatch size: {minibatch_size}")
@@ -647,8 +674,14 @@ def train(config: TrainConfig):
         if config.use_recurrent:
             seq_flat = seq_buf.view(T * B, history_config.window, history_feature_dim)
 
-        # Normalize advantages
-        adv_flat = (adv_flat - adv_flat.mean()) / (adv_flat.std() + 1e-8)
+        # Normalize advantages (skip if variance is too small)
+        adv_mean = adv_flat.mean()
+        adv_std = adv_flat.std(unbiased=False)
+        adv_norm_skipped = False
+        if adv_std > 1e-6:
+            adv_flat = (adv_flat - adv_mean) / (adv_std + 1e-8)
+        else:
+            adv_norm_skipped = True
 
         # PPO update
         indices = torch.randperm(T * B, device=device)
@@ -656,10 +689,15 @@ def train(config: TrainConfig):
         policy_loss = torch.tensor(0.0, device=device)
         value_loss = torch.tensor(0.0, device=device)
         entropy = torch.tensor(0.0, device=device)
+        mb_count = 0
+        sum_loss = 0.0
+        sum_policy = 0.0
+        sum_value = 0.0
+        sum_entropy = 0.0
 
         for epoch in range(config.ppo_epochs):
             for start in range(0, T * B, minibatch_size):
-                end = start + minibatch_size
+                end = min(start + minibatch_size, T * B)
                 mb_idx = indices[start:end]
 
                 mb_obs = obs_flat[mb_idx]
@@ -695,6 +733,12 @@ def train(config: TrainConfig):
                 nn.utils.clip_grad_norm_(network.parameters(), config.max_grad_norm)
                 optimizer.step()
 
+                mb_count += 1
+                sum_loss += float(loss.item())
+                sum_policy += float(policy_loss.item())
+                sum_value += float(value_loss.item())
+                sum_entropy += float(entropy.item())
+
         # Logging
         elapsed = time.time() - start_time
         sps = total_steps / elapsed if elapsed > 0 else 0.0
@@ -704,6 +748,11 @@ def train(config: TrainConfig):
             pool_evs = [entry.stats.ev_ema for entry in pool.entries]
             pool_mean_ev = float(np.mean(pool_evs)) if pool_evs else 0.0
             pool_min_ev = float(np.min(pool_evs)) if pool_evs else 0.0
+            denom = max(1, mb_count)
+            mean_loss = sum_loss / denom
+            mean_policy_loss = sum_policy / denom
+            mean_value_loss = sum_value / denom
+            mean_entropy = sum_entropy / denom
 
             print(
                 f"Update {update}/{num_updates} | "
@@ -711,9 +760,11 @@ def train(config: TrainConfig):
                 f"Games: {total_games} | "
                 f"SPS: {sps:.0f} | "
                 f"Win%: {win_rate:.1f}% | "
-                f"Loss: {loss.item():.4f} | "
+                f"Loss: {mean_loss:.4f} | "
                 f"Pool: {len(pool.entries)}"
             )
+            if adv_norm_skipped:
+                print("Warning: advantage std too small; skipped normalization for this update.")
 
             writer.add_scalar("charts/SPS", sps, total_steps)
             writer.add_scalar("charts/games", total_games, total_steps)
@@ -721,10 +772,10 @@ def train(config: TrainConfig):
             writer.add_scalar("pool/size", len(pool.entries), total_steps)
             writer.add_scalar("pool/ev_mean", pool_mean_ev, total_steps)
             writer.add_scalar("pool/ev_min", pool_min_ev, total_steps)
-            writer.add_scalar("losses/total", loss.item(), total_steps)
-            writer.add_scalar("losses/policy", policy_loss.item(), total_steps)
-            writer.add_scalar("losses/value", value_loss.item(), total_steps)
-            writer.add_scalar("losses/entropy", entropy.item(), total_steps)
+            writer.add_scalar("losses/total", mean_loss, total_steps)
+            writer.add_scalar("losses/policy", mean_policy_loss, total_steps)
+            writer.add_scalar("losses/value", mean_value_loss, total_steps)
+            writer.add_scalar("losses/entropy", mean_entropy, total_steps)
 
         # Save checkpoint
         if update % config.save_interval == 0:

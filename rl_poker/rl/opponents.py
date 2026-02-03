@@ -296,6 +296,11 @@ class OpponentPool:
             opponent_ids: [N, seats] ids for opponents per finished env
             learner_scores: [N] learner final scores
             opponent_scores: [N, seats] opponent final scores
+
+        Note:
+            Scores must be higher-is-better. EV is defined as
+            learner_score - opponent_score; negative EV means the opponent
+            is stronger and will be sampled more by PSRO-lite.
         """
         if opponent_ids.size == 0:
             return
