@@ -116,6 +116,10 @@ def train(config: TrainConfig):
     # Setup device
     device = torch.device("cuda" if config.cuda and torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
+    if device.type == "cuda":
+        torch.set_float32_matmul_precision("high")
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
 
     # Set seed
     _ = torch.manual_seed(config.seed)
@@ -205,8 +209,6 @@ def train(config: TrainConfig):
         played_norm = public_played_counts / 4.0
 
         return torch.cat([obs, belief, other_remaining, played_norm], dim=1)
-
-    augmented_obs_dim = env.obs_dim + 39 + 3 + 13
 
     # Create network
     rec_net: RecurrentPolicyNetwork | None = None
@@ -318,25 +320,20 @@ def train(config: TrainConfig):
         opp_ids: np.ndarray, learner_scores: np.ndarray, opponent_scores: np.ndarray, alpha: float
     ) -> np.ndarray:
         if alpha <= 0:
-            return np.zeros_like(learner_scores)
+            return np.zeros_like(learner_scores, dtype=np.float32)
 
-        bonuses = np.zeros_like(learner_scores, dtype=np.float32)
-        for env_idx in range(opp_ids.shape[0]):
-            opp_ev = []
-            for seat_idx in range(opp_ids.shape[1]):
-                entry = pool.entries[int(opp_ids[env_idx, seat_idx])]
-                opp_ev.append(entry.stats.ev_ema)
-            baseline = float(np.mean(opp_ev)) if opp_ev else 0.0
-            episode_adv = float(learner_scores[env_idx] - np.mean(opponent_scores[env_idx]))
-            bonuses[env_idx] = alpha * (episode_adv - baseline)
-        return bonuses
+        ev_ema = np.array([entry.stats.ev_ema for entry in pool.entries], dtype=np.float32)
+        baseline = ev_ema[opp_ids].mean(axis=1) if opp_ids.size > 0 else 0.0
+        episode_adv = learner_scores - opponent_scores.mean(axis=1)
+        bonuses = alpha * (episode_adv - baseline)
+        return bonuses.astype(np.float32)
 
     def update_pool_and_assignments(
         rewards: torch.Tensor,
         dones: torch.Tensor,
         new_state: GameState,
-        last_step_idx_buf: np.ndarray,
-        rew_buf_ref: list[torch.Tensor],
+        last_step_idx_buf: torch.Tensor,
+        rew_buf_ref: torch.Tensor,
         current_step: int,
         step_rew_ref: torch.Tensor | None,
     ) -> None:
@@ -346,13 +343,15 @@ def train(config: TrainConfig):
             return
 
         done_idx = dones.nonzero().squeeze(-1)
-        done_idx_cpu = done_idx.cpu().numpy()
 
         # Update win counts
-        for i in done_idx:
-            winner = int(new_state.winner[i].item())
-            if winner >= 0:
-                total_wins[winner] += 1
+        winners = new_state.winner[done_idx].detach().cpu().numpy()
+        if winners.size > 0:
+            valid_w = winners[winners >= 0]
+            if valid_w.size > 0:
+                counts = np.bincount(valid_w, minlength=4)
+                for i in range(4):
+                    total_wins[i] += int(counts[i])
         total_games += dones.sum().item()
 
         # Update opponent pool stats
@@ -365,20 +364,27 @@ def train(config: TrainConfig):
         alpha = shaping_alpha(update)
         if alpha > 0:
             bonuses = compute_shaping_bonus(opp_ids_done, learner_scores, opp_scores, alpha)
-            for env_idx, bonus in zip(done_idx_cpu, bonuses):
-                env_i = int(env_idx)
-                last_idx = int(last_step_idx_buf[env_i])
-                if last_idx == current_step and step_rew_ref is not None:
-                    step_rew_ref[env_i] += float(bonus)
-                elif 0 <= last_idx < len(rew_buf_ref):
-                    rew_buf_ref[last_idx][env_i] += float(bonus)
+            bonuses_t = torch.as_tensor(bonuses, device=device)
+            last_idx = last_step_idx_buf[done_idx]
+            if step_rew_ref is not None and current_step >= 0:
+                mask_step = last_idx == current_step
+                if mask_step.any():
+                    env_ids = done_idx[mask_step]
+                    step_rew_ref[env_ids] += bonuses_t[mask_step]
+                mask_buf = (last_idx >= 0) & ~mask_step
+            else:
+                mask_buf = last_idx >= 0
+            if mask_buf.any():
+                env_ids = done_idx[mask_buf]
+                step_ids = last_idx[mask_buf]
+                rew_buf_ref[step_ids, env_ids] += bonuses_t[mask_buf]
 
         # Clear last step indices for finished envs
-        last_step_idx_buf[done_idx_cpu] = -1
+        last_step_idx_buf[done_idx] = -1
 
         # Resample opponents for finished envs
         opponent_ids[done_idx] = torch.as_tensor(
-            pool.sample_opponents(len(done_idx_cpu), seats=3), device=device, dtype=torch.long
+            pool.sample_opponents(done_idx.numel(), seats=3), device=device, dtype=torch.long
         )
 
     def select_opponent_actions(
@@ -412,15 +418,33 @@ def train(config: TrainConfig):
 
     for update in range(1, num_updates + 1):
         # Storage for rollout
-        obs_buf_list: list[torch.Tensor] = []
-        act_buf_list: list[torch.Tensor] = []
-        logp_buf_list: list[torch.Tensor] = []
-        rew_buf_list: list[torch.Tensor] = []
-        done_buf_list: list[torch.Tensor] = []
-        val_buf_list: list[torch.Tensor] = []
-        mask_buf_list: list[torch.Tensor] = []
-        seq_buf_list: list[torch.Tensor] | None = [] if config.use_recurrent else None
-        last_step_idx = -np.ones(config.num_envs, dtype=np.int32)
+        obs_buf = torch.zeros(
+            config.rollout_steps, config.num_envs, augmented_obs_dim, device=device
+        )
+        act_buf = torch.zeros(
+            config.rollout_steps, config.num_envs, dtype=torch.long, device=device
+        )
+        logp_buf = torch.zeros(config.rollout_steps, config.num_envs, device=device)
+        rew_buf = torch.zeros(config.rollout_steps, config.num_envs, device=device)
+        done_buf = torch.zeros(
+            config.rollout_steps, config.num_envs, dtype=torch.bool, device=device
+        )
+        val_buf = torch.zeros(config.rollout_steps, config.num_envs, device=device)
+        mask_buf = torch.zeros(
+            config.rollout_steps, config.num_envs, env.num_actions, dtype=torch.bool, device=device
+        )
+        seq_buf = None
+        if config.use_recurrent:
+            seq_buf = torch.zeros(
+                config.rollout_steps,
+                config.num_envs,
+                history_config.window,
+                history_feature_dim,
+                device=device,
+            )
+        last_step_idx = torch.full(
+            (config.num_envs,), -1, device=device, dtype=torch.long
+        )
 
         # Collect rollout (one learner action per env per step)
         for step in range(config.rollout_steps):
@@ -527,26 +551,26 @@ def train(config: TrainConfig):
                         assert seq_l is not None
                         step_seq[idx] = seq_l
                     pending[idx] = False
-                    idx_cpu = idx.detach().cpu().numpy()
-                    last_step_idx[idx_cpu] = step
+                    last_step_idx[idx] = step
 
                 if dones.any():
                     done_idx = dones.nonzero().squeeze(-1)
-                    done_idx_cpu = done_idx.detach().cpu().numpy()
-                    learner_envs_cpu = learner_envs.detach().cpu().numpy()
-                    for env_id in done_idx_cpu:
-                        if not learner_envs_cpu[env_id]:
-                            last_idx = int(last_step_idx[env_id])
-                            if 0 <= last_idx < len(rew_buf_list):
-                                rew_buf_list[last_idx][env_id] = rewards[env_id, 0]
-                                done_buf_list[last_idx][env_id] = True
+                    non_learner = done_idx[~learner_envs[done_idx]]
+                    if non_learner.numel() > 0:
+                        last_idx = last_step_idx[non_learner]
+                        valid = last_idx >= 0
+                        if valid.any():
+                            env_ids = non_learner[valid]
+                            step_ids = last_idx[valid]
+                            rew_buf[step_ids, env_ids] = rewards[env_ids, 0]
+                            done_buf[step_ids, env_ids] = True
 
                 update_pool_and_assignments(
                     rewards,
                     dones,
                     new_state,
                     last_step_idx,
-                    rew_buf_list,
+                    rew_buf,
                     step,
                     step_rew,
                 )
@@ -561,17 +585,17 @@ def train(config: TrainConfig):
                 else:
                     state = new_state
 
-            obs_buf_list.append(step_obs)
-            act_buf_list.append(step_act)
-            logp_buf_list.append(step_logp)
-            rew_buf_list.append(step_rew)
-            done_buf_list.append(step_done)
-            val_buf_list.append(step_val)
-            mask_buf_list.append(step_mask)
+            obs_buf[step] = step_obs
+            act_buf[step] = step_act
+            logp_buf[step] = step_logp
+            rew_buf[step] = step_rew
+            done_buf[step] = step_done
+            val_buf[step] = step_val
+            mask_buf[step] = step_mask
             if config.use_recurrent:
-                assert seq_buf_list is not None
+                assert seq_buf is not None
                 assert step_seq is not None
-                seq_buf_list.append(step_seq)
+                seq_buf[step] = step_seq
 
         # Bootstrap value: advance opponents until learner's turn, then evaluate value
         last_value = torch.zeros(config.num_envs, device=device)
@@ -639,19 +663,20 @@ def train(config: TrainConfig):
 
                 if dones.any():
                     done_idx = dones.nonzero().squeeze(-1)
-                    done_idx_cpu = done_idx.detach().cpu().numpy()
-                    for env_id in done_idx_cpu:
-                        last_idx = int(last_step_idx[env_id])
-                        if 0 <= last_idx < len(rew_buf_list):
-                            rew_buf_list[last_idx][env_id] = rewards[env_id, 0]
-                            done_buf_list[last_idx][env_id] = True
+                    last_idx = last_step_idx[done_idx]
+                    valid = last_idx >= 0
+                    if valid.any():
+                        env_ids = done_idx[valid]
+                        step_ids = last_idx[valid]
+                        rew_buf[step_ids, env_ids] = rewards[env_ids, 0]
+                        done_buf[step_ids, env_ids] = True
 
                 update_pool_and_assignments(
                     rewards,
                     dones,
                     new_state,
                     last_step_idx,
-                    rew_buf_list,
+                    rew_buf,
                     -1,
                     None,
                 )
@@ -666,18 +691,18 @@ def train(config: TrainConfig):
                 else:
                     state = new_state
 
-        # Stack buffers
-        obs_buf_tensor = torch.stack(obs_buf_list)  # [T, B, obs_dim]
-        act_buf_tensor = torch.stack(act_buf_list)  # [T, B]
-        logp_buf_tensor = torch.stack(logp_buf_list)  # [T, B]
-        rew_buf_tensor = torch.stack(rew_buf_list)  # [T, B]
-        done_buf_tensor = torch.stack(done_buf_list)  # [T, B]
-        val_buf_tensor = torch.stack(val_buf_list)  # [T, B]
-        mask_buf_tensor = torch.stack(mask_buf_list)  # [T, B, A]
+        # Rollout buffers (preallocated)
+        obs_buf_tensor = obs_buf
+        act_buf_tensor = act_buf
+        logp_buf_tensor = logp_buf
+        rew_buf_tensor = rew_buf
+        done_buf_tensor = done_buf
+        val_buf_tensor = val_buf
+        mask_buf_tensor = mask_buf
         seq_buf_tensor: torch.Tensor | None = None
         if config.use_recurrent:
-            assert seq_buf_list is not None
-            seq_buf_tensor = torch.stack(seq_buf_list)  # [T, B, W, F]
+            assert seq_buf is not None
+            seq_buf_tensor = seq_buf  # [T, B, W, F]
 
         # Add bootstrap value
         val_with_bootstrap = torch.cat([val_buf_tensor, last_value.unsqueeze(0)], dim=0)
