@@ -182,21 +182,21 @@ def train(config: TrainConfig):
         ).squeeze(1)
         remaining_rank_counts = (4.0 - my_rank_counts.float() - public_played_counts).clamp(min=0)
 
-        beliefs: list[torch.Tensor] = []
-        other_remaining: list[torch.Tensor] = []
+        belief_list: list[torch.Tensor] = []
+        other_remaining_list: list[torch.Tensor] = []
         for offset in [1, 2, 3]:
             other_p = (p_idx + offset) % 4
             other_cards = state.cards_remaining.gather(1, other_p.view(B, 1)).squeeze(1)
-            other_remaining.append(other_cards.float())
+            other_remaining_list.append(other_cards.float())
             logits = opp_rank_logits[torch.arange(B, device=device), other_p]
             weights = torch.softmax(logits, dim=1)
             weighted = remaining_rank_counts * weights
             norm = weighted.sum(dim=1).clamp(min=1.0)
             belief = weighted * (other_cards.float() / norm).unsqueeze(1)
-            beliefs.append(belief)
+            belief_list.append(belief)
 
-        belief = torch.cat(beliefs, dim=1) / 4.0
-        other_remaining = torch.stack(other_remaining, dim=1) / 13.0
+        belief = torch.cat(belief_list, dim=1) / 4.0
+        other_remaining = torch.stack(other_remaining_list, dim=1) / 13.0
         played_norm = public_played_counts / 4.0
 
         return torch.cat([obs, belief, other_remaining, played_norm], dim=1)
@@ -360,11 +360,12 @@ def train(config: TrainConfig):
         if alpha > 0:
             bonuses = compute_shaping_bonus(opp_ids_done, learner_scores, opp_scores, alpha)
             for env_idx, bonus in zip(done_idx_cpu, bonuses):
-                last_idx = int(last_step_idx_buf[env_idx])
+                env_i = int(env_idx)
+                last_idx = int(last_step_idx_buf[env_i])
                 if last_idx == current_step and step_rew_ref is not None:
-                    step_rew_ref[env_idx] += float(bonus)
+                    step_rew_ref[env_i] += float(bonus)
                 elif 0 <= last_idx < len(rew_buf_ref):
-                    rew_buf_ref[last_idx][env_idx] += float(bonus)
+                    rew_buf_ref[last_idx][env_i] += float(bonus)
 
         # Clear last step indices for finished envs
         last_step_idx_buf[done_idx_cpu] = -1
@@ -405,14 +406,14 @@ def train(config: TrainConfig):
 
     for update in range(1, num_updates + 1):
         # Storage for rollout
-        obs_buf: list[torch.Tensor] = []
-        act_buf: list[torch.Tensor] = []
-        logp_buf: list[torch.Tensor] = []
-        rew_buf: list[torch.Tensor] = []
-        done_buf: list[torch.Tensor] = []
-        val_buf: list[torch.Tensor] = []
-        mask_buf: list[torch.Tensor] = []
-        seq_buf: list[torch.Tensor] | None = [] if config.use_recurrent else None
+        obs_buf_list: list[torch.Tensor] = []
+        act_buf_list: list[torch.Tensor] = []
+        logp_buf_list: list[torch.Tensor] = []
+        rew_buf_list: list[torch.Tensor] = []
+        done_buf_list: list[torch.Tensor] = []
+        val_buf_list: list[torch.Tensor] = []
+        mask_buf_list: list[torch.Tensor] = []
+        seq_buf_list: list[torch.Tensor] | None = [] if config.use_recurrent else None
         last_step_idx = -np.ones(config.num_envs, dtype=np.int32)
 
         # Collect rollout (one learner action per env per step)
@@ -440,7 +441,8 @@ def train(config: TrainConfig):
                 actions = torch.zeros(config.num_envs, dtype=torch.long, device=device)
 
                 learner_envs = pending & (state.current_player == 0)
-                if learner_envs.any():
+                has_learner = bool(learner_envs.any().item())
+                if has_learner:
                     idx = learner_envs.nonzero(as_tuple=False).squeeze(-1)
                     with torch.no_grad():
                         if config.use_recurrent:
@@ -500,7 +502,7 @@ def train(config: TrainConfig):
                                 config.belief_pass_penalty * penalty
                             )
 
-                if learner_envs.any():
+                if has_learner:
                     step_obs[idx] = obs[idx]
                     step_act[idx] = actions[idx]
                     step_logp[idx] = logp_l
@@ -523,16 +525,16 @@ def train(config: TrainConfig):
                     for env_id in done_idx_cpu:
                         if not learner_envs_cpu[env_id]:
                             last_idx = int(last_step_idx[env_id])
-                            if 0 <= last_idx < len(rew_buf):
-                                rew_buf[last_idx][env_id] = rewards[env_id, 0]
-                                done_buf[last_idx][env_id] = True
+                            if 0 <= last_idx < len(rew_buf_list):
+                                rew_buf_list[last_idx][env_id] = rewards[env_id, 0]
+                                done_buf_list[last_idx][env_id] = True
 
                 update_pool_and_assignments(
                     rewards,
                     dones,
                     new_state,
                     last_step_idx,
-                    rew_buf,
+                    rew_buf_list,
                     step,
                     step_rew,
                 )
@@ -547,17 +549,17 @@ def train(config: TrainConfig):
                 else:
                     state = new_state
 
-            obs_buf.append(step_obs)
-            act_buf.append(step_act)
-            logp_buf.append(step_logp)
-            rew_buf.append(step_rew)
-            done_buf.append(step_done)
-            val_buf.append(step_val)
-            mask_buf.append(step_mask)
+            obs_buf_list.append(step_obs)
+            act_buf_list.append(step_act)
+            logp_buf_list.append(step_logp)
+            rew_buf_list.append(step_rew)
+            done_buf_list.append(step_done)
+            val_buf_list.append(step_val)
+            mask_buf_list.append(step_mask)
             if config.use_recurrent:
-                assert seq_buf is not None
+                assert seq_buf_list is not None
                 assert step_seq is not None
-                seq_buf.append(step_seq)
+                seq_buf_list.append(step_seq)
 
         # Bootstrap value: advance opponents until learner's turn, then evaluate value
         last_value = torch.zeros(config.num_envs, device=device)
@@ -567,7 +569,8 @@ def train(config: TrainConfig):
             obs = augment_obs(obs, state)
 
             learner_envs = pending & (state.current_player == 0)
-            if learner_envs.any():
+            has_learner = bool(learner_envs.any().item())
+            if has_learner:
                 idx = learner_envs.nonzero(as_tuple=False).squeeze(-1)
                 with torch.no_grad():
                     if config.use_recurrent:
@@ -627,16 +630,16 @@ def train(config: TrainConfig):
                     done_idx_cpu = done_idx.detach().cpu().numpy()
                     for env_id in done_idx_cpu:
                         last_idx = int(last_step_idx[env_id])
-                        if 0 <= last_idx < len(rew_buf):
-                            rew_buf[last_idx][env_id] = rewards[env_id, 0]
-                            done_buf[last_idx][env_id] = True
+                        if 0 <= last_idx < len(rew_buf_list):
+                            rew_buf_list[last_idx][env_id] = rewards[env_id, 0]
+                            done_buf_list[last_idx][env_id] = True
 
                 update_pool_and_assignments(
                     rewards,
                     dones,
                     new_state,
                     last_step_idx,
-                    rew_buf,
+                    rew_buf_list,
                     -1,
                     None,
                 )
@@ -652,34 +655,34 @@ def train(config: TrainConfig):
                     state = new_state
 
         # Stack buffers
-        obs_buf = torch.stack(obs_buf)  # [T, B, obs_dim]
-        act_buf = torch.stack(act_buf)  # [T, B]
-        logp_buf = torch.stack(logp_buf)  # [T, B]
-        rew_buf = torch.stack(rew_buf)  # [T, B]
-        done_buf = torch.stack(done_buf)  # [T, B]
-        val_buf = torch.stack(val_buf)  # [T, B]
-        mask_buf = torch.stack(mask_buf)  # [T, B, A]
+        obs_buf_tensor = torch.stack(obs_buf_list)  # [T, B, obs_dim]
+        act_buf_tensor = torch.stack(act_buf_list)  # [T, B]
+        logp_buf_tensor = torch.stack(logp_buf_list)  # [T, B]
+        rew_buf_tensor = torch.stack(rew_buf_list)  # [T, B]
+        done_buf_tensor = torch.stack(done_buf_list)  # [T, B]
+        val_buf_tensor = torch.stack(val_buf_list)  # [T, B]
+        mask_buf_tensor = torch.stack(mask_buf_list)  # [T, B, A]
         seq_buf_tensor: torch.Tensor | None = None
         if config.use_recurrent:
-            assert seq_buf is not None
-            seq_buf_tensor = torch.stack(seq_buf)  # [T, B, W, F]
+            assert seq_buf_list is not None
+            seq_buf_tensor = torch.stack(seq_buf_list)  # [T, B, W, F]
 
         # Add bootstrap value
-        val_with_bootstrap = torch.cat([val_buf, last_value.unsqueeze(0)], dim=0)
+        val_with_bootstrap = torch.cat([val_buf_tensor, last_value.unsqueeze(0)], dim=0)
 
         # Compute GAE
         advantages, returns = compute_gae(
-            rew_buf, val_with_bootstrap, done_buf, config.gamma, config.gae_lambda
+            rew_buf_tensor, val_with_bootstrap, done_buf_tensor, config.gamma, config.gae_lambda
         )
 
         # Flatten for minibatch updates
-        T, B = obs_buf.shape[:2]
-        obs_flat = obs_buf.view(T * B, -1)
-        act_flat = act_buf.view(T * B)
-        logp_flat = logp_buf.view(T * B)
+        T, B = obs_buf_tensor.shape[:2]
+        obs_flat = obs_buf_tensor.view(T * B, -1)
+        act_flat = act_buf_tensor.view(T * B)
+        logp_flat = logp_buf_tensor.view(T * B)
         ret_flat = returns.view(T * B)
         adv_flat = advantages.view(T * B)
-        mask_flat = mask_buf.view(T * B, -1)
+        mask_flat = mask_buf_tensor.view(T * B, -1)
         seq_flat: torch.Tensor | None = None
         if config.use_recurrent:
             assert seq_buf_tensor is not None

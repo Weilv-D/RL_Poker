@@ -155,21 +155,21 @@ def evaluate_checkpoint(path: str, cfg: EvalConfig, device: torch.device) -> dic
         remaining_rank_counts = (4.0 - my_rank_counts.float() - public_played_counts).clamp(min=0)
         total_unknown = remaining_rank_counts.sum(dim=1).clamp(min=1.0)
 
-        beliefs: list[torch.Tensor] = []
-        other_remaining: list[torch.Tensor] = []
+        belief_list: list[torch.Tensor] = []
+        other_remaining_list: list[torch.Tensor] = []
         for offset in [1, 2, 3]:
             other_p = (p_idx + offset) % 4
             other_cards = state.cards_remaining.gather(1, other_p.view(B, 1)).squeeze(1)
-            other_remaining.append(other_cards.float())
+            other_remaining_list.append(other_cards.float())
             logits = opp_rank_logits[torch.arange(B, device=device), other_p]
             weights = torch.softmax(logits, dim=1)
             weighted = remaining_rank_counts * weights
             norm = weighted.sum(dim=1).clamp(min=1.0)
             belief = weighted * (other_cards.float() / norm).unsqueeze(1)
-            beliefs.append(belief)
+            belief_list.append(belief)
 
-        belief = torch.cat(beliefs, dim=1) / 4.0
-        other_remaining = torch.stack(other_remaining, dim=1) / 13.0
+        belief = torch.cat(belief_list, dim=1) / 4.0
+        other_remaining = torch.stack(other_remaining_list, dim=1) / 13.0
         played_norm = public_played_counts / 4.0
 
         return torch.cat([obs, belief, other_remaining, played_norm], dim=1)
