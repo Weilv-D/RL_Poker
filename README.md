@@ -68,6 +68,16 @@ python -m rl_poker.scripts.train --total-timesteps 100000
 ./scripts/train_gpu.sh --total-timesteps 2000000
 ```
 
+### 8GB GPU 建议参数
+
+```bash
+python -m rl_poker.scripts.train \
+  --num-envs 64 \
+  --rollout-steps 64 \
+  --total-timesteps 2000000 \
+  --hidden-size 256
+```
+
 ### 启动脚本使用方式（train_gpu.sh）
 
 ```bash
@@ -120,18 +130,23 @@ tensorboard --logdir runs
 --pool-heuristic-styles S  启发式风格 (默认: conservative,aggressive)
 --shaping-alpha A      塑形奖励系数 (默认: 0.1)
 --shaping-anneal-updates N  塑形奖励退火步数 (默认: 200)
+--no-recurrent         关闭 GRU/历史序列
+--history-window N     历史序列窗口长度 (默认: 16)
+--gru-hidden N         GRU 隐状态大小 (默认: 128)
+--reveal-opponent-ranks  调试用：泄露对手真实点数 (默认关闭)
 --seed N               随机种子 (默认: 42)
 --checkpoint-dir DIR   检查点目录 (默认: checkpoints)
 --log-dir DIR          日志目录 (默认: runs)
 --no-cuda              禁用 CUDA
 ```
 
-## 训练架构（对手池 + PSRO-lite）
+## 训练架构（对手池 + PSRO-lite + 记忆/信念）
 
 - 固定学习位 `player_0`，其余三位为对手池采样对手
 - 对手池由随机对手、GPU 启发式对手、历史快照构成
 - PSRO-lite 采样权重偏向“当前能压制你的对手”
 - 训练中定期加入策略快照，形成动态对抗分布
+- 观测默认不泄露对手手牌，通过历史序列与信念建模引导推理
 
 ## 对抗性塑形奖励
 
@@ -139,11 +154,12 @@ tensorboard --logdir runs
 - 额外塑形奖励：`alpha * (episode_adv - baseline)`，其中 `episode_adv = learner_score - mean(opponent_scores)`，`baseline` 为当前对手组合的 EV EMA 均值
 - `alpha` 线性退火到 0，避免改变最优解
 
-## 记忆/推理模块（预留）
+## 记忆/推理模块（已接入）
 
 - `rl_poker/rl/history.py` 提供历史序列缓存接口
-- `rl_poker/rl/recurrent.py` 提供 GRU 版策略网络骨架
-- 默认不启用，仅作为 Phase 3 的接入点
+- `rl_poker/rl/recurrent.py` 提供 GRU 版策略网络
+- 训练默认启用 GRU + 历史序列；可通过 `--no-recurrent` 关闭
+- 信念特征由公开出牌序列构建（不使用对手真实手牌）
 
 ## 评估（基于 AEC 完整规则）
 
@@ -151,10 +167,17 @@ tensorboard --logdir runs
 python -m rl_poker.scripts.evaluate --episodes 50 --opponents random,heuristic
 ```
 
+## 评估（GPU 训练一致环境）
+
+```bash
+python -m rl_poker.scripts.eval_gpu --checkpoint checkpoints/xxx.pt --episodes 200 --num-envs 128
+```
+
 ## 项目结构
 
 ```
 rl_poker/
+├── rl/                 # GPU 训练核心组件（环境/策略/对手池/记忆）
 ├── rl/                 # GPU 训练核心组件（环境/策略/对手池）
 ├── rules/              # 游戏规则定义
 │   ├── ranks.py        # 牌点和花色定义
@@ -169,6 +192,7 @@ rl_poker/
 │   └── rl_poker_aec.py
 ├── scripts/            # 训练和评估脚本
 │   ├── train.py
+│   ├── eval_gpu.py
 │   ├── evaluate.py
 │   └── smoke_env.py
 ├── agents/
@@ -187,6 +211,21 @@ tests/
 
 ```bash
 python -m pytest
+```
+
+## 从 0 开始训练（完整流程）
+
+```bash
+# 1) 安装
+python -m venv .venv
+source .venv/bin/activate
+pip install -e .
+
+# 2) 训练（默认启用 GRU + 历史序列 + 信念特征）
+python -m rl_poker.scripts.train --total-timesteps 2000000
+
+# 3) 评估（GPU 一致环境）
+python -m rl_poker.scripts.eval_gpu --checkpoint checkpoints/xxx.pt --episodes 200
 ```
 
 ## License

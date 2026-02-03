@@ -36,6 +36,10 @@ Options (key only):
     --pool-heuristic-styles S  Heuristic styles (default: conservative,aggressive)
     --shaping-alpha A      Shaping reward coefficient (default: 0.1)
     --shaping-anneal-updates N  Shaping anneal updates (default: 200)
+    --no-recurrent         Disable GRU/history
+    --history-window N     History window length (default: 16)
+    --gru-hidden N         GRU hidden size (default: 128)
+    --reveal-opponent-ranks  Debug: reveal opponents' ranks
     -h, --help             Show this help
 
 Examples:

@@ -399,11 +399,12 @@ def train(config: TrainConfig):
                     idx = learner_envs.nonzero(as_tuple=False).squeeze(-1)
                     with torch.no_grad():
                         if config.use_recurrent:
-                            seq = history_buffer.get_sequence(idx)
+                            seq_l = history_buffer.get_sequence(idx)
                             actions_l, logp_l, val_l = network.get_action(
-                                obs[idx], action_mask[idx], seq
+                                obs[idx], action_mask[idx], seq_l
                             )
                         else:
+                            seq_l = None
                             actions_l, logp_l, val_l = network.get_action(
                                 obs[idx], action_mask[idx]
                             )
@@ -412,6 +413,7 @@ def train(config: TrainConfig):
                     idx = None
                     logp_l = None
                     val_l = None
+                    seq_l = None
 
                 opponent_active = pending & (state.current_player != 0)
                 if opponent_active.any():
@@ -443,7 +445,7 @@ def train(config: TrainConfig):
                     step_done[idx] = dones[idx]
                     step_mask[idx] = action_mask[idx]
                     if config.use_recurrent:
-                        step_seq[idx] = history_buffer.get_sequence(idx)
+                        step_seq[idx] = seq_l
                     pending[idx] = False
                     idx_cpu = idx.detach().cpu().numpy()
                     last_step_idx[idx_cpu] = step
