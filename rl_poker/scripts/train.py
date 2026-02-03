@@ -148,25 +148,33 @@ def train(config: TrainConfig):
     # Public played counts for belief features
     public_played_counts = torch.zeros(config.num_envs, 13, device=device, dtype=torch.float32)
     opp_rank_logits = torch.zeros(config.num_envs, 4, 13, device=device, dtype=torch.float32)
+    batch_idx = torch.arange(config.num_envs, device=device)
     rank_positions = torch.arange(13, device=device)
     rank_dist = torch.abs(rank_positions.unsqueeze(0) - rank_positions.unsqueeze(1)).float()
     rank_affinity = torch.exp(-rank_dist / max(config.belief_temp, 1e-6))
     rank_affinity = rank_affinity / rank_affinity.sum(dim=1, keepdim=True).clamp(min=1e-6)
     response_rank_weights = build_response_rank_weights(env.mask_computer)
 
-    def build_history_features(actions: torch.Tensor, players: torch.Tensor) -> torch.Tensor:
-        action_types = env.mask_computer.action_types[actions]
-        action_ranks = env.mask_computer.action_ranks[actions].clamp(min=0)
-        action_lengths = env.mask_computer.action_lengths[actions]
-        action_is_exempt = env.mask_computer.action_is_exemption[actions].float()
-        is_pass = (actions == 0).float()
+    player_onehot_table = torch.eye(4, device=device, dtype=torch.float32)
+    action_types_table = env.mask_computer.action_types
+    action_ranks_table = env.mask_computer.action_ranks.clamp(min=0)
+    action_lengths_table = env.mask_computer.action_lengths
+    action_is_exempt_table = env.mask_computer.action_is_exemption.float().unsqueeze(1)
+    action_type_onehot_table = F.one_hot(action_types_table, num_classes=num_action_types).float()
+    action_rank_norm_table = (action_ranks_table.float() / 12.0).unsqueeze(1)
+    action_len_norm_table = (action_lengths_table.float() / max_action_length).unsqueeze(1)
+    is_pass_table = (torch.arange(env.num_actions, device=device) == 0).float().unsqueeze(1)
 
-        player_onehot = F.one_hot(players, num_classes=4).float()
-        type_onehot = F.one_hot(action_types, num_classes=num_action_types).float()
-        action_rank_norm = (action_ranks.float() / 12.0).unsqueeze(1)
-        action_len_norm = (action_lengths.float() / max_action_length).unsqueeze(1)
+    def build_history_features(actions: torch.Tensor, players: torch.Tensor) -> torch.Tensor:
+        player_onehot = player_onehot_table[players]
+        type_onehot = action_type_onehot_table[actions]
         scalars = torch.cat(
-            [action_rank_norm, action_len_norm, action_is_exempt.unsqueeze(1), is_pass.unsqueeze(1)],
+            [
+                action_rank_norm_table[actions],
+                action_len_norm_table[actions],
+                action_is_exempt_table[actions],
+                is_pass_table[actions],
+            ],
             dim=1,
         )
         return torch.cat([player_onehot, type_onehot, scalars], dim=1)
@@ -185,7 +193,7 @@ def train(config: TrainConfig):
             other_p = (p_idx + offset) % 4
             other_cards = state.cards_remaining.gather(1, other_p.view(B, 1)).squeeze(1)
             other_remaining_list.append(other_cards.float())
-            logits = opp_rank_logits[torch.arange(B, device=device), other_p]
+            logits = opp_rank_logits[batch_idx[:B], other_p]
             weights = torch.softmax(logits, dim=1)
             weighted = remaining_rank_counts * weights
             norm = weighted.sum(dim=1).clamp(min=1.0)
@@ -249,7 +257,9 @@ def train(config: TrainConfig):
         raise ValueError("Opponent pool is empty. Enable random or heuristic opponents.")
 
     # Initial opponent assignments: [num_envs, 3] for players 1,2,3
-    opponent_ids = pool.sample_opponents(config.num_envs, seats=3)
+    opponent_ids = torch.as_tensor(
+        pool.sample_opponents(config.num_envs, seats=3), device=device, dtype=torch.long
+    )
 
     # Logging
     checkpoint_root = os.path.abspath(config.checkpoint_dir)
@@ -346,7 +356,7 @@ def train(config: TrainConfig):
         total_games += dones.sum().item()
 
         # Update opponent pool stats
-        opp_ids_done = opponent_ids[done_idx_cpu]
+        opp_ids_done = opponent_ids[done_idx].detach().cpu().numpy()
         learner_scores = rewards[done_idx, 0].detach().cpu().numpy()
         opp_scores = rewards[done_idx, 1:4].detach().cpu().numpy()
         pool.update_stats(opp_ids_done, learner_scores, opp_scores)
@@ -367,7 +377,9 @@ def train(config: TrainConfig):
         last_step_idx_buf[done_idx_cpu] = -1
 
         # Resample opponents for finished envs
-        opponent_ids[done_idx_cpu] = pool.sample_opponents(len(done_idx_cpu), seats=3)
+        opponent_ids[done_idx] = torch.as_tensor(
+            pool.sample_opponents(len(done_idx_cpu), seats=3), device=device, dtype=torch.long
+        )
 
     def select_opponent_actions(
         actions: torch.Tensor,
@@ -376,21 +388,19 @@ def train(config: TrainConfig):
         current_player: torch.Tensor,
         active_mask: torch.Tensor,
     ) -> torch.Tensor:
-        current_cpu = current_player.cpu().numpy()
-        active_cpu = active_mask.cpu().numpy()
-
         for player_id in (1, 2, 3):
-            envs = np.where(active_cpu & (current_cpu == player_id))[0]
-            if envs.size == 0:
+            env_mask = active_mask & (current_player == player_id)
+            if not env_mask.any():
                 continue
-
+            envs = env_mask.nonzero(as_tuple=False).squeeze(-1)
             opp_ids = opponent_ids[envs, player_id - 1]
-            for opp_id in np.unique(opp_ids):
-                subset = envs[opp_ids == opp_id]
-                if subset.size == 0:
+            unique_ids = torch.unique(opp_ids)
+            for opp_id in unique_ids:
+                subset_mask = opp_ids == opp_id
+                if not subset_mask.any():
                     continue
-                idx = torch.tensor(subset, device=device, dtype=torch.long)
-                policy = pool.entries[int(opp_id)].policy
+                idx = envs[subset_mask]
+                policy = pool.entries[int(opp_id.item())].policy
                 if config.use_recurrent:
                     seq = history_buffer.get_sequence(idx)
                     assert seq is not None
