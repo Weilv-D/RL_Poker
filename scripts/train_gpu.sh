@@ -4,16 +4,15 @@
 set -euo pipefail
 
 # Defaults
-PYTHON="${PYTHON:-.venv/bin/python}"
-NUM_ENVS="${NUM_ENVS:-256}"
-TOTAL_TIMESTEPS="${TOTAL_TIMESTEPS:-1000000}"
+PYTHON="${PYTHON:-/home/weilv/workspace/prjforfun/RL_poker/.venv/bin/python}"
+NUM_ENVS="${NUM_ENVS:-128}"
+TOTAL_TIMESTEPS="${TOTAL_TIMESTEPS:-2000000}"
 ROLLOUT_STEPS="${ROLLOUT_STEPS:-128}"
 HIDDEN_SIZE="${HIDDEN_SIZE:-256}"
 LEARNING_RATE="${LEARNING_RATE:-3e-4}"
 SEED="${SEED:-42}"
 CHECKPOINT_DIR="${CHECKPOINT_DIR:-checkpoints}"
 LOG_DIR="${LOG_DIR:-runs}"
-START_TB="${START_TB:-1}"
 TB_HOST="${TB_HOST:-127.0.0.1}"
 TB_PORT="${TB_PORT:-6006}"
 
@@ -23,19 +22,14 @@ RL Poker GPU Training Script
 
 Usage: ./scripts/train_gpu.sh [options]
 
-Options:
-  --num-envs N           Number of parallel environments (default: 256)
-  --total-timesteps N    Total training timesteps (default: 1000000)
-  --rollout-steps N      Steps per rollout (default: 128)
-  --hidden-size N        Network hidden size (default: 256)
-  --learning-rate LR     Learning rate (default: 3e-4)
-  --seed N               Random seed (default: 42)
-  --checkpoint-dir DIR   Checkpoint directory (default: checkpoints)
-  --log-dir DIR          TensorBoard log directory (default: runs)
-  --no-tensorboard       Don't start TensorBoard
-  --tb-host HOST         TensorBoard host (default: 127.0.0.1)
-  --tb-port PORT         TensorBoard port (default: 6006)
-  -h, --help             Show this help
+Options (key only):
+    --num-envs N           Number of parallel environments (default: 128)
+    --total-timesteps N    Total training timesteps (default: 2000000)
+    --rollout-steps N      Steps per rollout (default: 128)
+    --hidden-size N        Network hidden size (default: 256)
+    --learning-rate LR     Learning rate (default: 3e-4)
+    --seed N               Random seed (default: 42)
+    -h, --help             Show this help
 
 Examples:
   # Quick test (5 minutes)
@@ -65,11 +59,6 @@ while [[ $# -gt 0 ]]; do
         --hidden-size) HIDDEN_SIZE="$2"; shift 2;;
         --learning-rate|--lr) LEARNING_RATE="$2"; shift 2;;
         --seed) SEED="$2"; shift 2;;
-        --checkpoint-dir) CHECKPOINT_DIR="$2"; shift 2;;
-        --log-dir) LOG_DIR="$2"; shift 2;;
-        --no-tensorboard) START_TB="0"; shift;;
-        --tb-host) TB_HOST="$2"; shift 2;;
-        --tb-port) TB_PORT="$2"; shift 2;;
         -h|--help) usage; exit 0;;
         --) shift; EXTRA_ARGS+=("$@"); break;;
         *) EXTRA_ARGS+=("$1"); shift;;
@@ -82,10 +71,6 @@ mkdir -p "$CHECKPOINT_DIR" "$LOG_DIR"
 # TensorBoard management
 TB_PID=""
 start_tensorboard() {
-    if [[ "$START_TB" == "0" ]]; then
-        return 0
-    fi
-    
     # Check if tensorboard is available
     if "$PYTHON" -c "import tensorboard" 2>/dev/null; then
         "$PYTHON" -m tensorboard.main --logdir "$LOG_DIR" --host "$TB_HOST" --port "$TB_PORT" \

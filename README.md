@@ -60,8 +60,26 @@ pip install tensorboard  # 可选
 # 快速测试
 python -m rl_poker.scripts.train --total-timesteps 100000
 
-# 带 TensorBoard 的训练脚本
-./scripts/train_gpu.sh --total-timesteps 1000000
+# 带 TensorBoard 的训练脚本（自动启动 TensorBoard）
+./scripts/train_gpu.sh --total-timesteps 2000000
+```
+
+### 启动脚本使用方式（train_gpu.sh）
+
+```bash
+# 直接运行（默认使用 /home/weilv/workspace/prjforfun/RL_poker/.venv）
+./scripts/train_gpu.sh
+
+# 自定义参数
+./scripts/train_gpu.sh --num-envs 256 --rollout-steps 256 --total-timesteps 50000000 \
+    --learning-rate 3e-4 --num-minibatches 8 --ppo-epochs 4 --log-interval 5 --save-interval 50
+
+# 指定 venv（可选）
+PYTHON=/home/weilv/workspace/prjforfun/RL_poker/.venv/bin/python \
+    ./scripts/train_gpu.sh --total-timesteps 2000000
+
+# 查看帮助
+./scripts/train_gpu.sh --help
 ```
 
 ### 监控训练
@@ -74,15 +92,15 @@ tensorboard --logdir runs
 ### 训练参数（train.py）
 
 ```
---num-envs N           并行环境数量 (默认: 256)
---total-timesteps N    总训练步数 (默认: 1000000)
+--num-envs N           并行环境数量 (默认: 128)
+--total-timesteps N    总训练步数 (默认: 2000000)
 --rollout-steps N      每次 rollout 的步数 (默认: 128)
 --hidden-size N        网络隐藏层大小 (默认: 256)
 --learning-rate LR     学习率 (默认: 3e-4)
 --gamma GAMMA          折扣因子 (默认: 0.99)
 --gae-lambda LAM       GAE lambda (默认: 0.95)
 --ppo-epochs N         PPO 更新轮数 (默认: 4)
---num-minibatches N    小批次数量 (默认: 4)
+--num-minibatches N    小批次数量 (默认: 8)
 --clip-coef C          PPO clip 系数 (默认: 0.2)
 --ent-coef C           熵奖励系数 (默认: 0.01)
 --vf-coef C            价值损失系数 (默认: 0.5)
