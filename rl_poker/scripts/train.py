@@ -120,6 +120,7 @@ def train(config: TrainConfig):
         torch.set_float32_matmul_precision("high")
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
+        torch.backends.cudnn.benchmark = True
 
     # Set seed
     _ = torch.manual_seed(config.seed)
@@ -152,7 +153,6 @@ def train(config: TrainConfig):
     # Public played counts for belief features
     public_played_counts = torch.zeros(config.num_envs, 13, device=device, dtype=torch.float32)
     opp_rank_logits = torch.zeros(config.num_envs, 4, 13, device=device, dtype=torch.float32)
-    batch_idx = torch.arange(config.num_envs, device=device)
     other_offsets = torch.tensor([1, 2, 3], device=device)
     rank_positions = torch.arange(13, device=device)
     rank_dist = torch.abs(rank_positions.unsqueeze(0) - rank_positions.unsqueeze(1)).float()
@@ -412,69 +412,86 @@ def train(config: TrainConfig):
 
         return actions
 
+    # Storage for rollout (reused each update)
+    obs_buf = torch.zeros(
+        config.rollout_steps, config.num_envs, augmented_obs_dim, device=device
+    )
+    act_buf = torch.zeros(
+        config.rollout_steps, config.num_envs, dtype=torch.long, device=device
+    )
+    logp_buf = torch.zeros(config.rollout_steps, config.num_envs, device=device)
+    rew_buf = torch.zeros(config.rollout_steps, config.num_envs, device=device)
+    done_buf = torch.zeros(
+        config.rollout_steps, config.num_envs, dtype=torch.bool, device=device
+    )
+    val_buf = torch.zeros(config.rollout_steps, config.num_envs, device=device)
+    mask_buf = torch.zeros(
+        config.rollout_steps, config.num_envs, env.num_actions, dtype=torch.bool, device=device
+    )
+    seq_buf = None
+    if config.use_recurrent:
+        seq_buf = torch.zeros(
+            config.rollout_steps,
+            config.num_envs,
+            history_config.window,
+            history_feature_dim,
+            device=device,
+        )
+
     for update in range(1, num_updates + 1):
-        # Storage for rollout
-        obs_buf = torch.zeros(
-            config.rollout_steps, config.num_envs, augmented_obs_dim, device=device
-        )
-        act_buf = torch.zeros(
-            config.rollout_steps, config.num_envs, dtype=torch.long, device=device
-        )
-        logp_buf = torch.zeros(config.rollout_steps, config.num_envs, device=device)
-        rew_buf = torch.zeros(config.rollout_steps, config.num_envs, device=device)
-        done_buf = torch.zeros(
-            config.rollout_steps, config.num_envs, dtype=torch.bool, device=device
-        )
-        val_buf = torch.zeros(config.rollout_steps, config.num_envs, device=device)
-        mask_buf = torch.zeros(
-            config.rollout_steps, config.num_envs, env.num_actions, dtype=torch.bool, device=device
-        )
-        seq_buf = None
+        # Reset rollout buffers
+        obs_buf.zero_()
+        act_buf.zero_()
+        logp_buf.zero_()
+        rew_buf.zero_()
+        done_buf.zero_()
+        val_buf.zero_()
+        mask_buf.zero_()
         if config.use_recurrent:
-            seq_buf = torch.zeros(
-                config.rollout_steps,
-                config.num_envs,
-                history_config.window,
-                history_feature_dim,
-                device=device,
-            )
+            assert seq_buf is not None
+            seq_buf.zero_()
         last_step_idx = torch.full(
             (config.num_envs,), -1, device=device, dtype=torch.long
         )
 
-        # Collect rollout (one learner action per env per step)
-        for step in range(config.rollout_steps):
-            pending = torch.ones(config.num_envs, dtype=torch.bool, device=device)
-            step_obs = torch.zeros(config.num_envs, augmented_obs_dim, device=device)
-            step_act = torch.zeros(config.num_envs, dtype=torch.long, device=device)
-            step_logp = torch.zeros(config.num_envs, device=device)
-            step_val = torch.zeros(config.num_envs, device=device)
-            step_rew = torch.zeros(config.num_envs, device=device)
-            step_done = torch.zeros(config.num_envs, dtype=torch.bool, device=device)
-            step_mask = torch.zeros(config.num_envs, env.num_actions, dtype=torch.bool, device=device)
-            step_seq: torch.Tensor | None = None
-            if config.use_recurrent:
-                step_seq = torch.zeros(
-                    config.num_envs,
-                    history_config.window,
-                    history_feature_dim,
-                    device=device,
-                )
+        with torch.inference_mode():
+            # Collect rollout (one learner action per env per step)
+            for step in range(config.rollout_steps):
+                pending = torch.ones(config.num_envs, dtype=torch.bool, device=device)
+                step_obs = obs_buf[step]
+                step_act = act_buf[step]
+                step_logp = logp_buf[step]
+                step_val = val_buf[step]
+                step_rew = rew_buf[step]
+                step_done = done_buf[step]
+                step_mask = mask_buf[step]
+                step_obs.zero_()
+                step_act.zero_()
+                step_logp.zero_()
+                step_val.zero_()
+                step_rew.zero_()
+                step_done.zero_()
+                step_mask.zero_()
+                step_seq: torch.Tensor | None = None
+                if config.use_recurrent:
+                    assert seq_buf is not None
+                    step_seq = seq_buf[step]
+                    step_seq.zero_()
 
-            while pending.any():
-                obs, action_mask = env.get_obs_and_mask(state)
-                obs = augment_obs(obs, state)
                 actions = torch.zeros(config.num_envs, dtype=torch.long, device=device)
-                idx: torch.Tensor | None = None
-                logp_l: torch.Tensor | None = None
-                val_l: torch.Tensor | None = None
-                seq_l: torch.Tensor | None = None
+                while pending.any():
+                    actions.zero_()
+                    obs, action_mask = env.get_obs_and_mask(state)
+                    obs = augment_obs(obs, state)
+                    idx: torch.Tensor | None = None
+                    logp_l: torch.Tensor | None = None
+                    val_l: torch.Tensor | None = None
+                    seq_l: torch.Tensor | None = None
 
-                learner_envs = pending & (state.current_player == 0)
-                has_learner = bool(learner_envs.any().item())
-                if has_learner:
-                    idx = learner_envs.nonzero(as_tuple=False).squeeze(-1)
-                    with torch.no_grad():
+                    learner_envs = pending & (state.current_player == 0)
+                    has_learner = bool(learner_envs.any().item())
+                    if has_learner:
+                        idx = learner_envs.nonzero(as_tuple=False).squeeze(-1)
                         if config.use_recurrent:
                             assert rec_net is not None
                             seq_l = history_buffer.get_sequence(idx)
@@ -487,124 +504,113 @@ def train(config: TrainConfig):
                             actions_l, logp_l, val_l = policy_net.get_action(
                                 obs[idx], action_mask[idx]
                             )
-                    actions[idx] = actions_l
+                        actions[idx] = actions_l
 
-                opponent_active = pending & (state.current_player != 0)
-                if opponent_active.any():
-                    actions = select_opponent_actions(
-                        actions, obs, action_mask, state.current_player, opponent_active
-                    )
-
-                new_state, rewards, dones = env.step(state, actions, active_mask=pending)
-                total_steps += int(pending.sum().item())
-
-                # Update public played counts, belief logits, and history
-                played = (actions != 0) & pending
-                if played.any():
-                    action_counts = env.mask_computer.action_required_counts[actions].float()
-                    public_played_counts[played] += action_counts[played]
-                    if config.belief_use_behavior:
-                        players = state.current_player
-                        opp_rank_logits[played, players[played]] *= config.belief_decay
-                        evidence = action_counts[played] @ rank_affinity
-                        opp_rank_logits[played, players[played]] += (
-                            config.belief_play_bonus * evidence
+                    opponent_active = pending & (state.current_player != 0)
+                    if opponent_active.any():
+                        actions = select_opponent_actions(
+                            actions, obs, action_mask, state.current_player, opponent_active
                         )
 
-                if history_config.enabled:
-                    env_ids = pending.nonzero(as_tuple=False).squeeze(-1)
-                    if env_ids.numel() > 0:
-                        feats = build_history_features(actions[env_ids], state.current_player[env_ids])
-                        history_buffer.push(feats, env_ids=env_ids)
+                    new_state, rewards, dones = env.step(state, actions, active_mask=pending)
+                    total_steps += int(pending.sum().item())
 
-                passed = (actions == 0) & pending
-                if passed.any() and config.belief_use_behavior:
-                    players = state.current_player
-                    prev_rank = state.prev_action_rank
-                    valid = prev_rank >= 0
-                    if valid.any():
-                        envs = passed & valid
-                        if envs.any():
-                            prev_actions = state.prev_action[envs]
-                            penalty = response_rank_weights[prev_actions] @ rank_affinity
-                            opp_rank_logits[envs, players[envs]] -= (
-                                config.belief_pass_penalty * penalty
+                    # Update public played counts, belief logits, and history
+                    played = (actions != 0) & pending
+                    if played.any():
+                        action_counts = env.mask_computer.action_required_counts[actions].float()
+                        public_played_counts[played] += action_counts[played]
+                        if config.belief_use_behavior:
+                            players = state.current_player
+                            opp_rank_logits[played, players[played]] *= config.belief_decay
+                            evidence = action_counts[played] @ rank_affinity
+                            opp_rank_logits[played, players[played]] += (
+                                config.belief_play_bonus * evidence
                             )
 
-                if has_learner:
-                    assert idx is not None
-                    assert logp_l is not None
-                    assert val_l is not None
-                    step_obs[idx] = obs[idx]
-                    step_act[idx] = actions[idx]
-                    step_logp[idx] = logp_l
-                    step_val[idx] = val_l
-                    step_rew[idx] = rewards[idx, 0]
-                    step_done[idx] = dones[idx]
-                    step_mask[idx] = action_mask[idx]
-                    if config.use_recurrent:
-                        assert step_seq is not None
-                        assert seq_l is not None
-                        step_seq[idx] = seq_l
-                    pending[idx] = False
-                    last_step_idx[idx] = step
-
-                if dones.any():
-                    done_idx = dones.nonzero().squeeze(-1)
-                    non_learner = done_idx[~learner_envs[done_idx]]
-                    if non_learner.numel() > 0:
-                        last_idx = last_step_idx[non_learner]
-                        valid = last_idx >= 0
-                        if valid.any():
-                            env_ids = non_learner[valid]
-                            step_ids = last_idx[valid]
-                            rew_buf[step_ids, env_ids] = rewards[env_ids, 0]
-                            done_buf[step_ids, env_ids] = True
-
-                update_pool_and_assignments(
-                    rewards,
-                    dones,
-                    new_state,
-                    last_step_idx,
-                    rew_buf,
-                    step,
-                    step_rew,
-                )
-
-                if dones.any():
-                    done_idx = dones.nonzero().squeeze(-1)
-                    public_played_counts[done_idx] = 0.0
-                    opp_rank_logits[done_idx] = 0.0
                     if history_config.enabled:
-                        history_buffer.reset_envs(done_idx)
-                    state = env.reset_done_envs(new_state, dones)
-                else:
-                    state = new_state
+                        env_ids = pending.nonzero(as_tuple=False).squeeze(-1)
+                        if env_ids.numel() > 0:
+                            feats = build_history_features(actions[env_ids], state.current_player[env_ids])
+                            history_buffer.push(feats, env_ids=env_ids)
 
-            obs_buf[step] = step_obs
-            act_buf[step] = step_act
-            logp_buf[step] = step_logp
-            rew_buf[step] = step_rew
-            done_buf[step] = step_done
-            val_buf[step] = step_val
-            mask_buf[step] = step_mask
-            if config.use_recurrent:
-                assert seq_buf is not None
-                assert step_seq is not None
-                seq_buf[step] = step_seq
+                    passed = (actions == 0) & pending
+                    if passed.any() and config.belief_use_behavior:
+                        players = state.current_player
+                        prev_rank = state.prev_action_rank
+                        valid = prev_rank >= 0
+                        if valid.any():
+                            envs = passed & valid
+                            if envs.any():
+                                prev_actions = state.prev_action[envs]
+                                penalty = response_rank_weights[prev_actions] @ rank_affinity
+                                opp_rank_logits[envs, players[envs]] -= (
+                                    config.belief_pass_penalty * penalty
+                                )
 
-        # Bootstrap value: advance opponents until learner's turn, then evaluate value
-        last_value = torch.zeros(config.num_envs, device=device)
-        pending = torch.ones(config.num_envs, dtype=torch.bool, device=device)
-        while pending.any():
-            obs, action_mask = env.get_obs_and_mask(state)
-            obs = augment_obs(obs, state)
+                    if has_learner:
+                        assert idx is not None
+                        assert logp_l is not None
+                        assert val_l is not None
+                        step_obs[idx] = obs[idx]
+                        step_act[idx] = actions[idx]
+                        step_logp[idx] = logp_l
+                        step_val[idx] = val_l
+                        step_rew[idx] = rewards[idx, 0]
+                        step_done[idx] = dones[idx]
+                        step_mask[idx] = action_mask[idx]
+                        if config.use_recurrent:
+                            assert step_seq is not None
+                            assert seq_l is not None
+                            step_seq[idx] = seq_l
+                        pending[idx] = False
+                        last_step_idx[idx] = step
 
-            learner_envs = pending & (state.current_player == 0)
-            has_learner = bool(learner_envs.any().item())
-            if has_learner:
-                idx = learner_envs.nonzero(as_tuple=False).squeeze(-1)
-                with torch.no_grad():
+                    if dones.any():
+                        done_idx = dones.nonzero().squeeze(-1)
+                        non_learner = done_idx[~learner_envs[done_idx]]
+                        if non_learner.numel() > 0:
+                            last_idx = last_step_idx[non_learner]
+                            valid = last_idx >= 0
+                            if valid.any():
+                                env_ids = non_learner[valid]
+                                step_ids = last_idx[valid]
+                                rew_buf[step_ids, env_ids] = rewards[env_ids, 0]
+                                done_buf[step_ids, env_ids] = True
+
+                    update_pool_and_assignments(
+                        rewards,
+                        dones,
+                        new_state,
+                        last_step_idx,
+                        rew_buf,
+                        step,
+                        step_rew,
+                    )
+
+                    if dones.any():
+                        done_idx = dones.nonzero().squeeze(-1)
+                        public_played_counts[done_idx] = 0.0
+                        opp_rank_logits[done_idx] = 0.0
+                        if history_config.enabled:
+                            history_buffer.reset_envs(done_idx)
+                        state = env.reset_done_envs(new_state, dones)
+                    else:
+                        state = new_state
+
+            # Bootstrap value: advance opponents until learner's turn, then evaluate value
+            last_value = torch.zeros(config.num_envs, device=device)
+            pending = torch.ones(config.num_envs, dtype=torch.bool, device=device)
+            actions = torch.zeros(config.num_envs, dtype=torch.long, device=device)
+            while pending.any():
+                actions.zero_()
+                obs, action_mask = env.get_obs_and_mask(state)
+                obs = augment_obs(obs, state)
+
+                learner_envs = pending & (state.current_player == 0)
+                has_learner = bool(learner_envs.any().item())
+                if has_learner:
+                    idx = learner_envs.nonzero(as_tuple=False).squeeze(-1)
                     if config.use_recurrent:
                         assert rec_net is not None
                         seq = history_buffer.get_sequence(idx)
@@ -613,79 +619,78 @@ def train(config: TrainConfig):
                     else:
                         assert policy_net is not None
                         _, _, values = policy_net.get_action(obs[idx], action_mask[idx])
-                last_value[idx] = values
-                pending[idx] = False
+                    last_value[idx] = values
+                    pending[idx] = False
 
-            opponent_active = pending & (state.current_player != 0)
-            if opponent_active.any():
-                actions = torch.zeros(config.num_envs, dtype=torch.long, device=device)
-                actions = select_opponent_actions(
-                    actions, obs, action_mask, state.current_player, opponent_active
-                )
-                new_state, rewards, dones = env.step(state, actions, active_mask=opponent_active)
-                total_steps += int(opponent_active.sum().item())
+                opponent_active = pending & (state.current_player != 0)
+                if opponent_active.any():
+                    actions = select_opponent_actions(
+                        actions, obs, action_mask, state.current_player, opponent_active
+                    )
+                    new_state, rewards, dones = env.step(state, actions, active_mask=opponent_active)
+                    total_steps += int(opponent_active.sum().item())
 
-                played = (actions != 0) & opponent_active
-                if played.any():
-                    action_counts = env.mask_computer.action_required_counts[actions].float()
-                    public_played_counts[played] += action_counts[played]
-                    if config.belief_use_behavior:
-                        players = state.current_player
-                        opp_rank_logits[played, players[played]] *= config.belief_decay
-                        evidence = action_counts[played] @ rank_affinity
-                        opp_rank_logits[played, players[played]] += (
-                            config.belief_play_bonus * evidence
-                        )
-
-                passed = (actions == 0) & opponent_active
-                if passed.any() and config.belief_use_behavior:
-                    players = state.current_player
-                    prev_rank = state.prev_action_rank
-                    valid = prev_rank >= 0
-                    if valid.any():
-                        envs = passed & valid
-                        if envs.any():
-                            prev_actions = state.prev_action[envs]
-                            penalty = response_rank_weights[prev_actions] @ rank_affinity
-                            opp_rank_logits[envs, players[envs]] -= (
-                                config.belief_pass_penalty * penalty
+                    played = (actions != 0) & opponent_active
+                    if played.any():
+                        action_counts = env.mask_computer.action_required_counts[actions].float()
+                        public_played_counts[played] += action_counts[played]
+                        if config.belief_use_behavior:
+                            players = state.current_player
+                            opp_rank_logits[played, players[played]] *= config.belief_decay
+                            evidence = action_counts[played] @ rank_affinity
+                            opp_rank_logits[played, players[played]] += (
+                                config.belief_play_bonus * evidence
                             )
 
-                if history_config.enabled:
-                    env_ids = opponent_active.nonzero(as_tuple=False).squeeze(-1)
-                    if env_ids.numel() > 0:
-                        feats = build_history_features(actions[env_ids], state.current_player[env_ids])
-                        history_buffer.push(feats, env_ids=env_ids)
+                    passed = (actions == 0) & opponent_active
+                    if passed.any() and config.belief_use_behavior:
+                        players = state.current_player
+                        prev_rank = state.prev_action_rank
+                        valid = prev_rank >= 0
+                        if valid.any():
+                            envs = passed & valid
+                            if envs.any():
+                                prev_actions = state.prev_action[envs]
+                                penalty = response_rank_weights[prev_actions] @ rank_affinity
+                                opp_rank_logits[envs, players[envs]] -= (
+                                    config.belief_pass_penalty * penalty
+                                )
 
-                if dones.any():
-                    done_idx = dones.nonzero().squeeze(-1)
-                    last_idx = last_step_idx[done_idx]
-                    valid = last_idx >= 0
-                    if valid.any():
-                        env_ids = done_idx[valid]
-                        step_ids = last_idx[valid]
-                        rew_buf[step_ids, env_ids] = rewards[env_ids, 0]
-                        done_buf[step_ids, env_ids] = True
-
-                update_pool_and_assignments(
-                    rewards,
-                    dones,
-                    new_state,
-                    last_step_idx,
-                    rew_buf,
-                    -1,
-                    None,
-                )
-
-                if dones.any():
-                    done_idx = dones.nonzero().squeeze(-1)
-                    public_played_counts[done_idx] = 0.0
-                    opp_rank_logits[done_idx] = 0.0
                     if history_config.enabled:
-                        history_buffer.reset_envs(done_idx)
-                    state = env.reset_done_envs(new_state, dones)
-                else:
-                    state = new_state
+                        env_ids = opponent_active.nonzero(as_tuple=False).squeeze(-1)
+                        if env_ids.numel() > 0:
+                            feats = build_history_features(actions[env_ids], state.current_player[env_ids])
+                            history_buffer.push(feats, env_ids=env_ids)
+
+                    if dones.any():
+                        done_idx = dones.nonzero().squeeze(-1)
+                        last_idx = last_step_idx[done_idx]
+                        valid = last_idx >= 0
+                        if valid.any():
+                            env_ids = done_idx[valid]
+                            step_ids = last_idx[valid]
+                            rew_buf[step_ids, env_ids] = rewards[env_ids, 0]
+                            done_buf[step_ids, env_ids] = True
+
+                    update_pool_and_assignments(
+                        rewards,
+                        dones,
+                        new_state,
+                        last_step_idx,
+                        rew_buf,
+                        -1,
+                        None,
+                    )
+
+                    if dones.any():
+                        done_idx = dones.nonzero().squeeze(-1)
+                        public_played_counts[done_idx] = 0.0
+                        opp_rank_logits[done_idx] = 0.0
+                        if history_config.enabled:
+                            history_buffer.reset_envs(done_idx)
+                        state = env.reset_done_envs(new_state, dones)
+                    else:
+                        state = new_state
 
         # Rollout buffers (preallocated)
         obs_buf_tensor = obs_buf

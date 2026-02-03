@@ -1,0 +1,72 @@
+<svg width="1200" height="360" viewBox="0 0 1200 360" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="RL Poker system overview">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1200" y2="360" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0E1B2A"/>
+      <stop offset="1" stop-color="#13263A"/>
+    </linearGradient>
+    <linearGradient id="card" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1FA2A8"/>
+      <stop offset="1" stop-color="#2BD4C2"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#F2B34C"/>
+      <stop offset="1" stop-color="#F6D05E"/>
+    </linearGradient>
+    <filter id="shadow" x="-20" y="-20" width="1240" height="400" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#000000" flood-opacity="0.25"/>
+    </filter>
+  </defs>
+
+  <rect width="1200" height="360" rx="20" fill="url(#bg)"/>
+
+  <g opacity="0.12">
+    <circle cx="980" cy="80" r="60" fill="#1FA2A8"/>
+    <circle cx="1080" cy="280" r="70" fill="#F2B34C"/>
+    <circle cx="120" cy="280" r="90" fill="#1FA2A8"/>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="70" y="70" width="240" height="110" rx="16" fill="#1B2C44" stroke="#2BD4C2" stroke-width="2"/>
+    <rect x="330" y="70" width="260" height="110" rx="16" fill="#1B2C44" stroke="#2BD4C2" stroke-width="2"/>
+    <rect x="610" y="70" width="250" height="110" rx="16" fill="#1B2C44" stroke="#2BD4C2" stroke-width="2"/>
+    <rect x="880" y="70" width="250" height="110" rx="16" fill="#1B2C44" stroke="#2BD4C2" stroke-width="2"/>
+
+    <rect x="160" y="210" width="260" height="110" rx="16" fill="#1B2C44" stroke="#F6D05E" stroke-width="2"/>
+    <rect x="470" y="210" width="260" height="110" rx="16" fill="#1B2C44" stroke="#F6D05E" stroke-width="2"/>
+    <rect x="780" y="210" width="260" height="110" rx="16" fill="#1B2C44" stroke="#F6D05E" stroke-width="2"/>
+  </g>
+
+  <g font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-weight="600" font-size="16" fill="#E9F4FF">
+    <text x="110" y="125">CPU Rules Engine</text>
+    <text x="360" y="125">PettingZoo AEC Env</text>
+    <text x="640" y="115">GPU Vectorized</text>
+    <text x="640" y="138">Training (PPO)</text>
+    <text x="920" y="115">Opponent Pool</text>
+    <text x="930" y="138">PSRO-lite</text>
+
+    <text x="200" y="265">Belief Features</text>
+    <text x="225" y="288">+ GRU Memory</text>
+    <text x="510" y="265">Evaluation &</text>
+    <text x="520" y="288">Checkpointing</text>
+    <text x="820" y="265">Heuristic</text>
+    <text x="840" y="288">Opponents</text>
+  </g>
+
+  <g stroke="#88E3DA" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M310 125 L330 125"/>
+    <path d="M590 125 L610 125"/>
+    <path d="M860 125 L880 125"/>
+    <path d="M460 180 L300 210"/>
+    <path d="M610 180 L600 210"/>
+    <path d="M760 180 L900 210"/>
+  </g>
+
+  <g>
+    <rect x="92" y="95" width="26" height="36" rx="4" fill="url(#card)"/>
+    <rect x="102" y="88" width="26" height="36" rx="4" fill="url(#card)" opacity="0.8"/>
+    <rect x="112" y="81" width="26" height="36" rx="4" fill="url(#card)" opacity="0.6"/>
+
+    <circle cx="940" cy="100" r="12" fill="url(#accent)"/>
+    <circle cx="965" cy="122" r="10" fill="url(#accent)" opacity="0.8"/>
+  </g>
+</svg>
