@@ -29,6 +29,13 @@ Options (key only):
     --hidden-size N        Network hidden size (default: 256)
     --learning-rate LR     Learning rate (default: 3e-4)
     --seed N               Random seed (default: 42)
+    --pool-max-size N      Opponent pool size cap (default: 16)
+    --pool-add-interval N  Snapshot add interval (default: 10)
+    --pool-no-random       Disable random opponents
+    --pool-no-heuristic    Disable heuristic opponents
+    --pool-heuristic-styles S  Heuristic styles (default: conservative,aggressive)
+    --shaping-alpha A      Shaping reward coefficient (default: 0.1)
+    --shaping-anneal-updates N  Shaping anneal updates (default: 200)
     -h, --help             Show this help
 
 Examples:

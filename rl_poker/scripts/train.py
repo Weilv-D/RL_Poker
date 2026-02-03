@@ -4,7 +4,7 @@
 This module provides a high-performance training loop that runs entirely on GPU:
 - Vectorized environments simulated in parallel
 - Batched action mask computation
-- PPO algorithm with fixed learner seat and sampled opponents
+- PPO algorithm with fixed learner seat and sampled opponents (PSRO-lite)
 
 Key features:
 - ~10,000+ SPS (steps per second) on modern GPUs
@@ -190,7 +190,8 @@ def train(config: TrainConfig):
                 entry = pool.entries[int(opp_ids[env_idx, seat_idx])]
                 opp_ev.append(entry.stats.ev_ema)
             baseline = float(np.mean(opp_ev)) if opp_ev else 0.0
-            bonuses[env_idx] = alpha * (learner_scores[env_idx] - baseline)
+            episode_adv = float(learner_scores[env_idx] - np.mean(opponent_scores[env_idx]))
+            bonuses[env_idx] = alpha * (episode_adv - baseline)
         return bonuses
 
     def update_pool_and_assignments(
@@ -199,6 +200,8 @@ def train(config: TrainConfig):
         new_state,
         last_step_idx_buf: np.ndarray,
         rew_buf_ref: List[torch.Tensor],
+        current_step: int,
+        step_rew_ref: torch.Tensor | None,
     ) -> None:
         nonlocal total_games, total_wins, opponent_ids
 
@@ -227,8 +230,13 @@ def train(config: TrainConfig):
             bonuses = compute_shaping_bonus(opp_ids_done, learner_scores, opp_scores, alpha)
             for env_idx, bonus in zip(done_idx_cpu, bonuses):
                 last_idx = int(last_step_idx_buf[env_idx])
-                if 0 <= last_idx < len(rew_buf_ref):
+                if last_idx == current_step and step_rew_ref is not None:
+                    step_rew_ref[env_idx] += float(bonus)
+                elif 0 <= last_idx < len(rew_buf_ref):
                     rew_buf_ref[last_idx][env_idx] += float(bonus)
+
+        # Clear last step indices for finished envs
+        last_step_idx_buf[done_idx_cpu] = -1
 
         # Resample opponents for finished envs
         opponent_ids[done_idx_cpu] = pool.sample_opponents(len(done_idx_cpu), seats=3)
@@ -307,8 +315,6 @@ def train(config: TrainConfig):
                 new_state, rewards, dones = env.step(state, actions, active_mask=pending)
                 total_steps += int(pending.sum().item())
 
-                update_pool_and_assignments(rewards, dones, new_state, last_step_idx, rew_buf)
-
                 if learner_envs.any():
                     step_obs[idx] = obs[idx]
                     step_act[idx] = actions[idx]
@@ -331,7 +337,16 @@ def train(config: TrainConfig):
                             if 0 <= last_idx < len(rew_buf):
                                 rew_buf[last_idx][env_id] = rewards[env_id, 0]
                                 done_buf[last_idx][env_id] = True
-                        last_step_idx[env_id] = -1
+
+                update_pool_and_assignments(
+                    rewards,
+                    dones,
+                    new_state,
+                    last_step_idx,
+                    rew_buf,
+                    step,
+                    step_rew,
+                )
 
                 if dones.any():
                     state = env.reset_done_envs(new_state, dones)
@@ -369,8 +384,6 @@ def train(config: TrainConfig):
                 new_state, rewards, dones = env.step(state, actions, active_mask=opponent_active)
                 total_steps += int(opponent_active.sum().item())
 
-                update_pool_and_assignments(rewards, dones, new_state, last_step_idx, rew_buf)
-
                 if dones.any():
                     done_idx = dones.nonzero().squeeze(-1)
                     done_idx_cpu = done_idx.detach().cpu().numpy()
@@ -379,7 +392,18 @@ def train(config: TrainConfig):
                         if 0 <= last_idx < len(rew_buf):
                             rew_buf[last_idx][env_id] = rewards[env_id, 0]
                             done_buf[last_idx][env_id] = True
-                        last_step_idx[env_id] = -1
+
+                update_pool_and_assignments(
+                    rewards,
+                    dones,
+                    new_state,
+                    last_step_idx,
+                    rew_buf,
+                    -1,
+                    None,
+                )
+
+                if dones.any():
                     state = env.reset_done_envs(new_state, dones)
                 else:
                     state = new_state
