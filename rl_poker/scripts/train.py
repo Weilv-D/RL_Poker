@@ -100,6 +100,11 @@ class TrainConfig:
     save_interval: int = 50
     checkpoint_dir: str = "checkpoints"
     log_dir: str = "runs"
+    tb_interval: int = 1
+    tb_detail_interval: int = 10
+    tb_hist_interval: int = 50
+    tb_max_queue: int = 2000
+    tb_flush_secs: int = 30
 
     # Misc
     seed: int = 42
@@ -261,25 +266,67 @@ def train(config: TrainConfig):
     run_name = f"rl_poker_{config.seed}_{int(time.time())}"
     run_log_dir = os.path.join(log_root, run_name)
     os.makedirs(run_log_dir, exist_ok=True)
-    writer = SummaryWriter(run_log_dir)
+    writer = SummaryWriter(
+        run_log_dir, max_queue=config.tb_max_queue, flush_secs=config.tb_flush_secs
+    )
+    tb_enabled = True
+    tb_errors = 0
+    tb_recover_tries = 1
+
+    def _recreate_writer() -> None:
+        nonlocal writer
+        try:
+            writer.close()
+        except Exception:
+            pass
+        os.makedirs(run_log_dir, exist_ok=True)
+        writer = SummaryWriter(
+            run_log_dir, max_queue=config.tb_max_queue, flush_secs=config.tb_flush_secs
+        )
+
+    def _disable_tb(reason: Exception) -> None:
+        nonlocal tb_enabled
+        if tb_enabled:
+            print(f"Warning: TensorBoard logging disabled due to error: {reason}")
+        tb_enabled = False
+        try:
+            writer.close()
+        except Exception:
+            pass
 
     def tb_add_scalar(tag: str, value: float, step: int) -> None:
-        nonlocal writer
+        nonlocal writer, tb_errors
+        if not tb_enabled:
+            return
         try:
             writer.add_scalar(tag, value, step)
-        except FileNotFoundError:
-            os.makedirs(run_log_dir, exist_ok=True)
-            writer = SummaryWriter(run_log_dir)
-            writer.add_scalar(tag, value, step)
+        except Exception as err:
+            tb_errors += 1
+            if tb_errors <= tb_recover_tries:
+                _recreate_writer()
+                try:
+                    writer.add_scalar(tag, value, step)
+                except Exception as err2:
+                    _disable_tb(err2)
+            else:
+                _disable_tb(err)
 
     def tb_add_histogram(tag: str, values: torch.Tensor, step: int) -> None:
-        nonlocal writer
+        nonlocal writer, tb_errors
+        if not tb_enabled:
+            return
         try:
             writer.add_histogram(tag, values, step)
-        except FileNotFoundError:
-            os.makedirs(run_log_dir, exist_ok=True)
-            writer = SummaryWriter(run_log_dir)
-            writer.add_histogram(tag, values, step)
+        except Exception as err:
+            tb_errors += 1
+            if tb_errors <= tb_recover_tries:
+                _recreate_writer()
+                try:
+                    writer.add_histogram(tag, values, step)
+                except Exception as err2:
+                    _disable_tb(err2)
+            else:
+                _disable_tb(err)
 
     # Training state
     state = env.reset()
@@ -795,7 +842,12 @@ def train(config: TrainConfig):
         elapsed = time.time() - start_time
         sps = total_steps / elapsed if elapsed > 0 else 0.0
 
-        if update % config.log_interval == 0:
+        do_log = update % config.log_interval == 0
+        do_tb = update % config.tb_interval == 0
+        do_detail = do_tb and (update % config.tb_detail_interval == 0)
+        do_hist = do_tb and (update % config.tb_hist_interval == 0)
+
+        if do_log or do_tb:
             win_rate = total_wins[0] / max(1, total_games) * 100
             pool_evs = [entry.stats.ev_ema for entry in pool.entries]
             pool_mean_ev = float(np.mean(pool_evs)) if pool_evs else 0.0
@@ -810,62 +862,75 @@ def train(config: TrainConfig):
             mean_kl = sum_kl / denom
             mean_clipfrac = sum_clipfrac / denom
             mean_grad_norm = sum_grad_norm / denom
+            pass_rate = float((act_buf_tensor == 0).float().mean().item())
 
-            with torch.no_grad():
-                reward_mean = float(rew_buf_tensor.mean().item())
-                reward_std = float(rew_buf_tensor.std(unbiased=False).item())
-                reward_min = float(rew_buf_tensor.min().item())
-                reward_max = float(rew_buf_tensor.max().item())
-                return_mean = float(returns.mean().item())
-                return_std = float(returns.std(unbiased=False).item())
-                value_mean = float(val_buf_tensor.mean().item())
-                value_std = float(val_buf_tensor.std(unbiased=False).item())
-                adv_mean_val = float(adv_flat.mean().item())
-                adv_std_val = float(adv_flat.std(unbiased=False).item())
-                pass_rate = float((act_buf_tensor == 0).float().mean().item())
+            reward_mean = reward_std = reward_min = reward_max = 0.0
+            return_mean = return_std = 0.0
+            value_mean = value_std = 0.0
+            adv_mean_val = adv_std_val = 0.0
+            exp_var = 0.0
 
-                ret_var = returns.var(unbiased=False)
-                if ret_var.item() > 1e-8:
-                    exp_var = 1.0 - float(((returns - val_buf_tensor) ** 2).var(unbiased=False).item()) / float(ret_var.item())
-                else:
-                    exp_var = 0.0
+            if do_detail:
+                with torch.no_grad():
+                    reward_mean = float(rew_buf_tensor.mean().item())
+                    reward_std = float(rew_buf_tensor.std(unbiased=False).item())
+                    reward_min = float(rew_buf_tensor.min().item())
+                    reward_max = float(rew_buf_tensor.max().item())
+                    return_mean = float(returns.mean().item())
+                    return_std = float(returns.std(unbiased=False).item())
+                    value_mean = float(val_buf_tensor.mean().item())
+                    value_std = float(val_buf_tensor.std(unbiased=False).item())
+                    adv_mean_val = float(adv_flat.mean().item())
+                    adv_std_val = float(adv_flat.std(unbiased=False).item())
 
-            print(
-                f"Update {update}/{num_updates} | Steps: {total_steps:,} | Games: {total_games} | SPS: {sps:.0f} | Win%: {win_rate:.1f}% | Loss: {mean_loss:.4f} | Pool: {len(pool.entries)}"
-            )
-            if adv_norm_skipped:
-                print("Warning: advantage std too small; skipped normalization for this update.")
+                    ret_var = returns.var(unbiased=False)
+                    if ret_var.item() > 1e-8:
+                        exp_var = 1.0 - float(((returns - val_buf_tensor) ** 2).var(unbiased=False).item()) / float(ret_var.item())
+                    else:
+                        exp_var = 0.0
 
-            tb_add_scalar("charts/SPS", sps, total_steps)
-            tb_add_scalar("charts/games", total_games, total_steps)
-            tb_add_scalar("charts/win_rate_p0", win_rate, total_steps)
-            tb_add_scalar("charts/pass_rate", pass_rate, total_steps)
-            tb_add_scalar("charts/approx_kl", mean_kl, total_steps)
-            tb_add_scalar("charts/clip_frac", mean_clipfrac, total_steps)
-            tb_add_scalar("charts/grad_norm", mean_grad_norm, total_steps)
-            tb_add_scalar("charts/explained_variance", exp_var, total_steps)
-            tb_add_scalar("charts/adv_mean", adv_mean_val, total_steps)
-            tb_add_scalar("charts/adv_std", adv_std_val, total_steps)
-            tb_add_scalar("charts/return_mean", return_mean, total_steps)
-            tb_add_scalar("charts/return_std", return_std, total_steps)
-            tb_add_scalar("charts/value_mean", value_mean, total_steps)
-            tb_add_scalar("charts/value_std", value_std, total_steps)
-            tb_add_scalar("pool/size", len(pool.entries), total_steps)
-            tb_add_scalar("pool/ev_mean", pool_mean_ev, total_steps)
-            tb_add_scalar("pool/ev_min", pool_min_ev, total_steps)
-            tb_add_scalar("pool/ev_max", pool_max_ev, total_steps)
-            tb_add_scalar("pool/ev_std", pool_std_ev, total_steps)
-            tb_add_scalar("rewards/mean", reward_mean, total_steps)
-            tb_add_scalar("rewards/std", reward_std, total_steps)
-            tb_add_scalar("rewards/min", reward_min, total_steps)
-            tb_add_scalar("rewards/max", reward_max, total_steps)
-            tb_add_scalar("losses/total", mean_loss, total_steps)
-            tb_add_scalar("losses/policy", mean_policy_loss, total_steps)
-            tb_add_scalar("losses/value", mean_value_loss, total_steps)
-            tb_add_scalar("losses/entropy", mean_entropy, total_steps)
-            tb_add_histogram("debug/advantages", adv_flat.detach().cpu(), total_steps)
-            tb_add_histogram("debug/returns", returns.detach().cpu(), total_steps)
-            tb_add_histogram("debug/values", val_buf_tensor.detach().cpu(), total_steps)
+            if do_log:
+                print(
+                    f"Update {update}/{num_updates} | Steps: {total_steps:,} | Games: {total_games} | SPS: {sps:.0f} | Win%: {win_rate:.1f}% | Loss: {mean_loss:.4f} | Pool: {len(pool.entries)}"
+                )
+                if adv_norm_skipped:
+                    print("Warning: advantage std too small; skipped normalization for this update.")
+
+            if do_tb:
+                tb_add_scalar("charts/SPS", sps, total_steps)
+                tb_add_scalar("charts/games", total_games, total_steps)
+                tb_add_scalar("charts/win_rate_p0", win_rate, total_steps)
+                tb_add_scalar("charts/pass_rate", pass_rate, total_steps)
+                tb_add_scalar("charts/approx_kl", mean_kl, total_steps)
+                tb_add_scalar("charts/clip_frac", mean_clipfrac, total_steps)
+                tb_add_scalar("charts/grad_norm", mean_grad_norm, total_steps)
+                tb_add_scalar("losses/total", mean_loss, total_steps)
+                tb_add_scalar("losses/policy", mean_policy_loss, total_steps)
+                tb_add_scalar("losses/value", mean_value_loss, total_steps)
+                tb_add_scalar("losses/entropy", mean_entropy, total_steps)
+                tb_add_scalar("pool/size", len(pool.entries), total_steps)
+                tb_add_scalar("pool/ev_mean", pool_mean_ev, total_steps)
+                tb_add_scalar("pool/ev_min", pool_min_ev, total_steps)
+                tb_add_scalar("pool/ev_max", pool_max_ev, total_steps)
+                tb_add_scalar("pool/ev_std", pool_std_ev, total_steps)
+
+                if do_detail:
+                    tb_add_scalar("charts/explained_variance", exp_var, total_steps)
+                    tb_add_scalar("charts/adv_mean", adv_mean_val, total_steps)
+                    tb_add_scalar("charts/adv_std", adv_std_val, total_steps)
+                    tb_add_scalar("charts/return_mean", return_mean, total_steps)
+                    tb_add_scalar("charts/return_std", return_std, total_steps)
+                    tb_add_scalar("charts/value_mean", value_mean, total_steps)
+                    tb_add_scalar("charts/value_std", value_std, total_steps)
+                    tb_add_scalar("rewards/mean", reward_mean, total_steps)
+                    tb_add_scalar("rewards/std", reward_std, total_steps)
+                    tb_add_scalar("rewards/min", reward_min, total_steps)
+                    tb_add_scalar("rewards/max", reward_max, total_steps)
+
+                if do_hist:
+                    tb_add_histogram("debug/advantages", adv_flat.detach().cpu(), total_steps)
+                    tb_add_histogram("debug/returns", returns.detach().cpu(), total_steps)
+                    tb_add_histogram("debug/values", val_buf_tensor.detach().cpu(), total_steps)
 
         # Save checkpoint
         if update % config.save_interval == 0:
@@ -963,6 +1028,11 @@ def main():
     parser.add_argument("--save-interval", type=int, default=50)
     parser.add_argument("--checkpoint-dir", type=str, default="checkpoints")
     parser.add_argument("--log-dir", type=str, default="runs")
+    parser.add_argument("--tb-interval", type=int, default=1)
+    parser.add_argument("--tb-detail-interval", type=int, default=10)
+    parser.add_argument("--tb-hist-interval", type=int, default=50)
+    parser.add_argument("--tb-max-queue", type=int, default=2000)
+    parser.add_argument("--tb-flush-secs", type=int, default=30)
 
     # Misc
     parser.add_argument("--seed", type=int, default=42)
@@ -1008,6 +1078,11 @@ def main():
         save_interval=args.save_interval,
         checkpoint_dir=args.checkpoint_dir,
         log_dir=args.log_dir,
+        tb_interval=args.tb_interval,
+        tb_detail_interval=args.tb_detail_interval,
+        tb_hist_interval=args.tb_hist_interval,
+        tb_max_queue=args.tb_max_queue,
+        tb_flush_secs=args.tb_flush_secs,
         seed=args.seed,
         cuda=not args.no_cuda,
     )

@@ -108,6 +108,11 @@ while [[ $# -gt 0 ]]; do
                 --shaping-alpha 0.1
                 --shaping-anneal-updates 500
                 --log-interval 1
+                --tb-interval 1
+                --tb-detail-interval 10
+                --tb-hist-interval 50
+                --tb-max-queue 2000
+                --tb-flush-secs 30
                 --save-interval 50
             )
             shift
