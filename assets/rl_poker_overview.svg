@@ -1,72 +1,150 @@
-<svg width="1200" height="360" viewBox="0 0 1200 360" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="RL Poker system overview">
+<svg width="1200" height="400" viewBox="0 0 1200 400" fill="none" xmlns="http://www.w3.org/2000/svg">
   <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1200" y2="360" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#0E1B2A"/>
-      <stop offset="1" stop-color="#13263A"/>
+    <style>
+      .title { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; font-weight: 800; font-size: 14px; fill: #E2E8F0; }
+      .subtitle { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; font-weight: 400; font-size: 11px; fill: #94A3B8; }
+      .label { font-family: "Consolas", "Monaco", "Courier New", monospace; font-size: 10px; fill: #64748B; letter-spacing: 1px;}
+    </style>
+
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#334155" stroke-width="0.5" opacity="0.3"/>
+    </pattern>
+
+    <linearGradient id="bg-gradient" x1="0" y1="0" x2="0" y2="400">
+      <stop offset="0" stop-color="#0F172A"/>
+      <stop offset="1" stop-color="#1E293B"/>
     </linearGradient>
-    <linearGradient id="card" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#1FA2A8"/>
-      <stop offset="1" stop-color="#2BD4C2"/>
+
+    <linearGradient id="card-blue" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0EA5E9" stop-opacity="0.1"/>
+      <stop offset="1" stop-color="#0EA5E9" stop-opacity="0.02"/>
     </linearGradient>
-    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#F2B34C"/>
-      <stop offset="1" stop-color="#F6D05E"/>
+    <linearGradient id="stroke-blue" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#38BDF8"/>
+      <stop offset="1" stop-color="#0EA5E9"/>
     </linearGradient>
-    <filter id="shadow" x="-20" y="-20" width="1240" height="400" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
-      <feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#000000" flood-opacity="0.25"/>
+
+    <linearGradient id="card-purple" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#8B5CF6" stop-opacity="0.1"/>
+      <stop offset="1" stop-color="#8B5CF6" stop-opacity="0.02"/>
+    </linearGradient>
+    <linearGradient id="stroke-purple" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#A78BFA"/>
+      <stop offset="1" stop-color="#7C3AED"/>
+    </linearGradient>
+
+    <linearGradient id="card-amber" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#F59E0B" stop-opacity="0.1"/>
+      <stop offset="1" stop-color="#F59E0B" stop-opacity="0.02"/>
+    </linearGradient>
+    <linearGradient id="stroke-amber" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#FBBF24"/>
+      <stop offset="1" stop-color="#D97706"/>
+    </linearGradient>
+
+    <filter id="glow-blue" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="3" result="blur"/>
+      <feComposite in="SourceGraphic" in2="blur" operator="over"/>
     </filter>
+    
+    <marker id="arrow-blue" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#38BDF8" />
+    </marker>
+     <marker id="arrow-purple" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#A78BFA" />
+    </marker>
   </defs>
 
-  <rect width="1200" height="360" rx="20" fill="url(#bg)"/>
+  <rect width="1200" height="400" rx="16" fill="url(#bg-gradient)"/>
+  <rect width="1200" height="400" rx="16" fill="url(#grid)"/>
 
-  <g opacity="0.12">
-    <circle cx="980" cy="80" r="60" fill="#1FA2A8"/>
-    <circle cx="1080" cy="280" r="70" fill="#F2B34C"/>
-    <circle cx="120" cy="280" r="90" fill="#1FA2A8"/>
+  <g stroke-width="2" fill="none" opacity="0.8">
+    <path d="M290 120 L330 120" stroke="#38BDF8" marker-end="url(#arrow-blue)"/>
+    <path d="M570 120 L610 120" stroke="#38BDF8" marker-end="url(#arrow-blue)"/>
+    <path d="M850 120 L890 120" stroke="#38BDF8" marker-end="url(#arrow-blue)"/>
+    
+    <path d="M730 170 C 730 200, 610 200, 580 250" stroke="#A78BFA" stroke-dasharray="4 4" marker-end="url(#arrow-purple)"/>
+    
+    <path d="M1010 170 C 1010 220, 1010 220, 1010 250" stroke="#FBBF24" stroke-opacity="0.6"/>
+    
+    <path d="M650 170 C 650 210, 300 210, 260 250" stroke="#38BDF8" stroke-opacity="0.5"/>
   </g>
 
-  <g filter="url(#shadow)">
-    <rect x="70" y="70" width="240" height="110" rx="16" fill="#1B2C44" stroke="#2BD4C2" stroke-width="2"/>
-    <rect x="330" y="70" width="260" height="110" rx="16" fill="#1B2C44" stroke="#2BD4C2" stroke-width="2"/>
-    <rect x="610" y="70" width="250" height="110" rx="16" fill="#1B2C44" stroke="#2BD4C2" stroke-width="2"/>
-    <rect x="880" y="70" width="250" height="110" rx="16" fill="#1B2C44" stroke="#2BD4C2" stroke-width="2"/>
-
-    <rect x="160" y="210" width="260" height="110" rx="16" fill="#1B2C44" stroke="#F6D05E" stroke-width="2"/>
-    <rect x="470" y="210" width="260" height="110" rx="16" fill="#1B2C44" stroke="#F6D05E" stroke-width="2"/>
-    <rect x="780" y="210" width="260" height="110" rx="16" fill="#1B2C44" stroke="#F6D05E" stroke-width="2"/>
+  <g transform="translate(50, 70)">
+    <rect width="240" height="100" rx="12" fill="url(#card-blue)" stroke="url(#stroke-blue)" stroke-width="1.5"/>
+    <g transform="translate(20, 25)" fill="#38BDF8">
+       <path d="M4 4h16v16H4z" opacity="0.3"/>
+       <path d="M7 7h10v10H7z"/>
+       <path d="M2 9h2M2 12h2M2 15h2M20 9h2M20 12h2M20 15h2M9 2v2M12 2v2M15 2v2M9 20v2M12 20v2M15 20v2" stroke="#38BDF8" stroke-width="2"/>
+    </g>
+    <text x="70" y="45" class="title">CPU Rules Engine</text>
+    <text x="70" y="65" class="subtitle">Valid Actions &amp; State</text>
+    <text x="220" y="25" class="label" text-anchor="end">01</text>
   </g>
 
-  <g font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-weight="600" font-size="16" fill="#E9F4FF">
-    <text x="110" y="125">CPU Rules Engine</text>
-    <text x="360" y="125">PettingZoo AEC Env</text>
-    <text x="640" y="115">GPU Vectorized</text>
-    <text x="640" y="138">Training (PPO)</text>
-    <text x="920" y="115">Opponent Pool</text>
-    <text x="930" y="138">PSRO-lite</text>
-
-    <text x="200" y="265">Belief Features</text>
-    <text x="225" y="288">+ GRU Memory</text>
-    <text x="510" y="265">Evaluation &</text>
-    <text x="520" y="288">Checkpointing</text>
-    <text x="820" y="265">Heuristic</text>
-    <text x="840" y="288">Opponents</text>
+  <g transform="translate(330, 70)">
+    <rect width="240" height="100" rx="12" fill="url(#card-blue)" stroke="url(#stroke-blue)" stroke-width="1.5"/>
+    <g transform="translate(20, 25)" fill="#38BDF8">
+      <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" stroke="#38BDF8" stroke-width="2" fill="none"/>
+    </g>
+    <text x="70" y="45" class="title">PettingZoo AEC</text>
+    <text x="70" y="65" class="subtitle">Multi-Agent Env</text>
+    <text x="220" y="25" class="label" text-anchor="end">02</text>
   </g>
 
-  <g stroke="#88E3DA" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M310 125 L330 125"/>
-    <path d="M590 125 L610 125"/>
-    <path d="M860 125 L880 125"/>
-    <path d="M460 180 L300 210"/>
-    <path d="M610 180 L600 210"/>
-    <path d="M760 180 L900 210"/>
+  <g transform="translate(610, 70)">
+    <rect width="240" height="100" rx="12" fill="url(#card-purple)" stroke="url(#stroke-purple)" stroke-width="1.5" filter="url(#glow-blue)"/>
+    <g transform="translate(20, 25)">
+      <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" stroke="#A78BFA" stroke-width="2" fill="#8B5CF6"/>
+    </g>
+    <text x="60" y="45" class="title" fill="#E2E8F0">GPU Vectorized</text>
+    <text x="60" y="65" class="subtitle" fill="#D8B4FE">PPO Training / CUDA</text>
+    <text x="220" y="25" class="label" text-anchor="end" fill="#A78BFA">CORE</text>
   </g>
 
-  <g>
-    <rect x="92" y="95" width="26" height="36" rx="4" fill="url(#card)"/>
-    <rect x="102" y="88" width="26" height="36" rx="4" fill="url(#card)" opacity="0.8"/>
-    <rect x="112" y="81" width="26" height="36" rx="4" fill="url(#card)" opacity="0.6"/>
-
-    <circle cx="940" cy="100" r="12" fill="url(#accent)"/>
-    <circle cx="965" cy="122" r="10" fill="url(#accent)" opacity="0.8"/>
+  <g transform="translate(890, 70)">
+    <rect width="240" height="100" rx="12" fill="url(#card-amber)" stroke="url(#stroke-amber)" stroke-width="1.5"/>
+    <g transform="translate(20, 25)" stroke="#FBBF24" stroke-width="2" fill="none">
+      <ellipse cx="12" cy="6" rx="10" ry="4"/>
+      <path d="M2 6v8c0 2.2 4.5 4 10 4s10-1.8 10-4V6"/>
+      <path d="M2 10c0 2.2 4.5 4 10 4s10-1.8 10-4"/>
+    </g>
+    <text x="60" y="45" class="title">Opponent Pool</text>
+    <text x="60" y="65" class="subtitle">PSRO-lite Strategy</text>
+    <text x="220" y="25" class="label" text-anchor="end" fill="#FBBF24">DB</text>
   </g>
+
+
+  <g transform="translate(130, 250)">
+    <rect width="260" height="90" rx="12" fill="#1e293b" stroke="#475569" stroke-width="1"/>
+    <g transform="translate(20, 25)" stroke="#94A3B8" stroke-width="2" fill="none">
+       <circle cx="6" cy="6" r="3"/>
+       <circle cx="18" cy="6" r="3"/>
+       <circle cx="12" cy="18" r="3"/>
+       <path d="M9 8l3 7M15 8l-3 7"/>
+    </g>
+    <text x="60" y="40" class="title" fill="#CBD5E1">Belief Features</text>
+    <text x="60" y="60" class="subtitle">+ GRU Memory Model</text>
+  </g>
+
+  <g transform="translate(470, 250)">
+    <rect width="260" height="90" rx="12" fill="#1e293b" stroke="#A78BFA" stroke-width="1" stroke-dasharray="4 4"/>
+    <g transform="translate(20, 25)" stroke="#A78BFA" stroke-width="2" fill="none">
+       <rect x="2" y="2" width="20" height="20" rx="2"/>
+       <path d="M7 16l3-6 4 4 4-8"/>
+    </g>
+    <text x="60" y="40" class="title" fill="#E2E8F0">Evaluation</text>
+    <text x="60" y="60" class="subtitle">Checkpointing &amp; Metrics</text>
+  </g>
+
+  <g transform="translate(810, 250)">
+    <rect width="260" height="90" rx="12" fill="#1e293b" stroke="#475569" stroke-width="1"/>
+    <g transform="translate(20, 25)" stroke="#94A3B8" stroke-width="2" fill="none">
+       <rect x="4" y="8" width="16" height="12" rx="2"/>
+       <path d="M8 12h2M14 12h2M6 8V5h12v3"/>
+    </g>
+    <text x="60" y="40" class="title" fill="#CBD5E1">Heuristic Bots</text>
+    <text x="60" y="60" class="subtitle">Baseline Opponents</text>
+  </g>
+
 </svg>
