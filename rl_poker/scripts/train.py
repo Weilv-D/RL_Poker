@@ -17,7 +17,6 @@ import argparse
 import os
 import time
 from dataclasses import dataclass
-from typing import cast
 
 import numpy as np
 import torch
@@ -204,6 +203,8 @@ def train(config: TrainConfig):
     augmented_obs_dim = env.obs_dim + 39 + 3 + 13
 
     # Create network
+    rec_net: RecurrentPolicyNetwork | None = None
+    policy_net: PolicyNetwork | None = None
     if config.use_recurrent:
         network = RecurrentPolicyNetwork(
             augmented_obs_dim,
@@ -212,12 +213,10 @@ def train(config: TrainConfig):
             hidden_size=config.hidden_size,
             gru_hidden=config.gru_hidden,
         ).to(device)
-        rec_net = cast(RecurrentPolicyNetwork, network)
-        policy_net: PolicyNetwork | None = None
+        rec_net = network
     else:
         network = PolicyNetwork(augmented_obs_dim, env.num_actions, config.hidden_size).to(device)
-        policy_net = cast(PolicyNetwork, network)
-        rec_net = None
+        policy_net = network
     optimizer = optim.Adam(network.parameters(), lr=config.learning_rate)
 
     # Opponent pool
@@ -344,7 +343,7 @@ def train(config: TrainConfig):
 
         # Update win counts
         for i in done_idx:
-            winner = new_state.winner[i].item()
+            winner = int(new_state.winner[i].item())
             if winner >= 0:
                 total_wins[winner] += 1
         total_games += dones.sum().item()
@@ -439,6 +438,10 @@ def train(config: TrainConfig):
                 obs, action_mask = env.get_obs_and_mask(state)
                 obs = augment_obs(obs, state)
                 actions = torch.zeros(config.num_envs, dtype=torch.long, device=device)
+                idx: torch.Tensor | None = None
+                logp_l: torch.Tensor | None = None
+                val_l: torch.Tensor | None = None
+                seq_l: torch.Tensor | None = None
 
                 learner_envs = pending & (state.current_player == 0)
                 has_learner = bool(learner_envs.any().item())
@@ -457,7 +460,6 @@ def train(config: TrainConfig):
                             actions_l, logp_l, val_l = policy_net.get_action(
                                 obs[idx], action_mask[idx]
                             )
-                            seq_l = None
                     actions[idx] = actions_l
 
                 opponent_active = pending & (state.current_player != 0)
@@ -503,6 +505,9 @@ def train(config: TrainConfig):
                             )
 
                 if has_learner:
+                    assert idx is not None
+                    assert logp_l is not None
+                    assert val_l is not None
                     step_obs[idx] = obs[idx]
                     step_act[idx] = actions[idx]
                     step_logp[idx] = logp_l
@@ -709,7 +714,7 @@ def train(config: TrainConfig):
         sum_value = 0.0
         sum_entropy = 0.0
 
-        for epoch in range(config.ppo_epochs):
+        for _epoch in range(config.ppo_epochs):
             for start in range(0, T * B, minibatch_size):
                 end = min(start + minibatch_size, T * B)
                 mb_idx = indices[start:end]

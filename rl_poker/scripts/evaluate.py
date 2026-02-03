@@ -20,15 +20,13 @@ from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-import json
 import sys
 import numpy as np
 
-from rl_poker.engine.game_state import GameState, NUM_PLAYERS, RANK_SCORES
-from rl_poker.agents.random_agent import RandomAgent, create_random_agent
-from rl_poker.agents.heuristic_agent import HeuristicAgent, create_heuristic_agent
+from rl_poker.engine.game_state import GameState, NUM_PLAYERS
+from rl_poker.agents.random_agent import create_random_agent
+from rl_poker.agents.heuristic_agent import create_heuristic_agent
 from rl_poker.agents.policy_pool import PolicyPool, PooledPolicyAgent, create_policy_pool, PolicyProtocol
-from rl_poker.moves.legal_moves import Move
 
 
 # Default K-factor for Elo updates
@@ -150,7 +148,7 @@ class EloTracker:
             lines.append(f"  {name}: {rating:.0f} ({sign}{change:.0f})")
         return "\n".join(lines)
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, object]:
         """Convert to dictionary for serialization."""
         return {
             "ratings": self.ratings,
@@ -159,12 +157,26 @@ class EloTracker:
         }
 
     @classmethod
-    def from_dict(cls, data: dict) -> "EloTracker":
+    def from_dict(cls, data: dict[str, object]) -> "EloTracker":
         """Create from dictionary."""
         tracker = cls()
-        tracker.ratings = data.get("ratings", [DEFAULT_STARTING_ELO] * NUM_PLAYERS)
-        tracker.rating_history = data.get("rating_history", [])
-        tracker.k_factor = data.get("k_factor", DEFAULT_ELO_K)
+        ratings = data.get("ratings")
+        if isinstance(ratings, list):
+            tracker.ratings = [float(r) for r in ratings]
+        else:
+            tracker.ratings = [DEFAULT_STARTING_ELO] * NUM_PLAYERS
+
+        history = data.get("rating_history")
+        if isinstance(history, list):
+            tracker.rating_history = [list(map(float, row)) for row in history if isinstance(row, list)]
+        else:
+            tracker.rating_history = []
+
+        k_factor = data.get("k_factor")
+        if isinstance(k_factor, (int, float)):
+            tracker.k_factor = float(k_factor)
+        else:
+            tracker.k_factor = DEFAULT_ELO_K
         return tracker
 
 
@@ -295,6 +307,7 @@ def create_agent(
     Raises:
         ValueError: If agent type is unknown or policy_pool missing for 'policy_pool' type
     """
+    _ = position
     agent_type = agent_type.lower().strip()
 
     if agent_type == "random":
@@ -472,7 +485,7 @@ def evaluate(
                 agent.reset()
 
         try:
-            scores, ranks, moves = run_episode(agents, seed=ep_seed, verbose=verbose)
+            scores, ranks, _ = run_episode(agents, seed=ep_seed, verbose=verbose)
             stats.record_episode(scores, ranks)
 
             if (ep + 1) % max(1, episodes // 10) == 0:

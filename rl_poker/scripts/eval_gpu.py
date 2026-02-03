@@ -153,7 +153,6 @@ def evaluate_checkpoint(path: str, cfg: EvalConfig, device: torch.device) -> dic
             1, p_idx.view(B, 1, 1).expand(-1, 1, 13)
         ).squeeze(1)
         remaining_rank_counts = (4.0 - my_rank_counts.float() - public_played_counts).clamp(min=0)
-        total_unknown = remaining_rank_counts.sum(dim=1).clamp(min=1.0)
 
         belief_list: list[torch.Tensor] = []
         other_remaining_list: list[torch.Tensor] = []
@@ -176,6 +175,8 @@ def evaluate_checkpoint(path: str, cfg: EvalConfig, device: torch.device) -> dic
 
     augmented_obs_dim = env.obs_dim + 39 + 3 + 13
 
+    rec_net: RecurrentPolicyNetwork | None = None
+    policy_net: PolicyNetwork | None = None
     if cfg.use_recurrent:
         network = RecurrentPolicyNetwork(
             augmented_obs_dim,
@@ -184,12 +185,10 @@ def evaluate_checkpoint(path: str, cfg: EvalConfig, device: torch.device) -> dic
             hidden_size=cfg.hidden_size,
             gru_hidden=cfg.gru_hidden,
         ).to(device)
-        rec_net = cast(RecurrentPolicyNetwork, network)
-        policy_net: PolicyNetwork | None = None
+        rec_net = network
     else:
         network = PolicyNetwork(augmented_obs_dim, env.num_actions, cfg.hidden_size).to(device)
-        policy_net = cast(PolicyNetwork, network)
-        rec_net = None
+        policy_net = network
 
     network.load_state_dict(state_dict)
     network.eval()

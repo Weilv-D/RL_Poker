@@ -37,6 +37,7 @@ class PolicyNetworkOpponent:
     def select_actions(
         self, obs: torch.Tensor, action_mask: torch.Tensor, seq: torch.Tensor | None = None
     ) -> torch.Tensor:
+        _ = seq
         with torch.no_grad():
             actions, _, _ = self.network.get_action(obs, action_mask)
         return actions
@@ -70,6 +71,8 @@ class GPURandomPolicy:
     def select_actions(
         self, obs: torch.Tensor, action_mask: torch.Tensor, seq: torch.Tensor | None = None
     ) -> torch.Tensor:
+        _ = obs
+        _ = seq
         mask = action_mask.float()
         # Fallback if mask invalid (should not happen)
         denom = mask.sum(dim=1, keepdim=True).clamp(min=1.0)
@@ -134,6 +137,8 @@ class GPUHeuristicPolicy:
     def select_actions(
         self, obs: torch.Tensor, action_mask: torch.Tensor, seq: torch.Tensor | None = None
     ) -> torch.Tensor:
+        _ = obs
+        _ = seq
         # Expand base scores to batch
         scores = self._base_scores.unsqueeze(0).expand(action_mask.shape[0], -1).clone()
         if self.style == "variance" and self.noise_scale > 0:

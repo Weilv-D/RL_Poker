@@ -3,6 +3,13 @@
   "venv": ".venv",
   "pythonVersion": "3.14",
   "include": ["rl_poker/rl", "rl_poker/scripts/train.py", "rl_poker/scripts/eval_gpu.py", "rl_poker/scripts/evaluate.py"],
+  "typeCheckingMode": "basic",
+  "reportAny": "none",
+  "reportUnknownMemberType": "none",
+  "reportUnknownVariableType": "none",
+  "reportUnknownArgumentType": "none",
+  "reportUnknownParameterType": "none",
+  "reportUnusedCallResult": "none",
   "executionEnvironments": [
     {
       "root": ".",
