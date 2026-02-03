@@ -233,12 +233,19 @@ class GPUPokerEnv:
 
         return obs, mask
 
-    def step(self, state: GameState, actions: torch.Tensor) -> Tuple[GameState, torch.Tensor, torch.Tensor]:
+    def step(
+        self,
+        state: GameState,
+        actions: torch.Tensor,
+        active_mask: torch.Tensor | None = None,
+    ) -> Tuple[GameState, torch.Tensor, torch.Tensor]:
         """Execute actions and return new state.
 
         Args:
             state: Current game state
             actions: [batch] action indices
+            active_mask: Optional [batch] bool tensor. If provided, only active envs
+                will be advanced; inactive envs remain unchanged.
 
         Returns:
             new_state: Updated state
@@ -249,6 +256,10 @@ class GPUPokerEnv:
         batch_idx = torch.arange(B, device=self.device)
         current_player = state.current_player
         not_done = ~state.done
+        if active_mask is None:
+            env_active = not_done
+        else:
+            env_active = active_mask & not_done
 
         # Clone mutable state
         new_hands = state.hands.clone()
@@ -276,8 +287,8 @@ class GPUPokerEnv:
         action_is_exemption = self.mask_computer.action_is_exemption[actions]
         action_standard_types = self.mask_computer.action_standard_types[actions]
 
-        played = (actions != 0) & not_done
-        is_pass = (actions == 0) & not_done
+        played = (actions != 0) & env_active
+        is_pass = (actions == 0) & env_active
 
         # Update prev action tracking for played actions
         new_prev_action = torch.where(played, actions, new_prev_action)
@@ -362,7 +373,9 @@ class GPUPokerEnv:
         active = ~new_has_finished
         lead_mask = torch.zeros_like(active)
         lead_mask[batch_idx, new_lead_player] = True
-        all_others_passed = ((new_has_passed | ~active) | lead_mask).all(dim=1) & ~new_done
+        all_others_passed = (
+            ((new_has_passed | ~active) | lead_mask).all(dim=1) & ~new_done & env_active
+        )
         envs = batch_idx[all_others_passed]
         new_has_passed[envs] = False
         new_passes[envs] = 0
@@ -387,10 +400,17 @@ class GPUPokerEnv:
         new_current = torch.where(all_others_passed & ~lead_active, first_active, new_current)
         new_lead_player = torch.where(all_others_passed & ~lead_active, first_active, new_lead_player)
 
+        # If inactive, keep current player unchanged
+        if active_mask is not None:
+            new_current = torch.where(env_active, new_current, current_player)
+
         # Compute rewards
         rewards = torch.zeros((B, 4), device=self.device)
         score_map = torch.tensor([0, 2, 1, -1, -2], device=self.device, dtype=torch.float)
         rewards = torch.where(game_over.unsqueeze(1), score_map[new_finish_rank], rewards)
+        if active_mask is not None:
+            rewards = torch.where(env_active.unsqueeze(1), rewards, torch.zeros_like(rewards))
+            new_done = torch.where(env_active, new_done, torch.zeros_like(new_done))
 
         new_state = GameState(
             hands=new_hands,

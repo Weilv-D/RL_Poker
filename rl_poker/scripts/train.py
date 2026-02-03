@@ -1,33 +1,38 @@
 #!/usr/bin/env python3
-"""GPU-native PPO training for RL Poker.
+"""GPU-native PPO training for RL Poker with opponent pool.
 
 This module provides a high-performance training loop that runs entirely on GPU:
 - Vectorized environments simulated in parallel
 - Batched action mask computation
-- PPO algorithm with self-play
+- PPO algorithm with fixed learner seat and sampled opponents
 
 Key features:
 - ~10,000+ SPS (steps per second) on modern GPUs
 - TensorBoard logging
 - Checkpoint saving/loading
 - Configurable hyperparameters
-
-Usage:
-    python -m rl_poker.scripts.train --help
-    python -m rl_poker.scripts.train --num-envs 128 --total-timesteps 2000000
 """
 
 import argparse
 import os
 import time
 from dataclasses import dataclass
+from typing import List
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.tensorboard.writer import SummaryWriter
 
-from rl_poker.rl import GPUPokerEnv, PolicyNetwork, compute_gae
+from rl_poker.rl import (
+    GPUPokerEnv,
+    PolicyNetwork,
+    compute_gae,
+    OpponentPool,
+    GPURandomPolicy,
+    GPUHeuristicPolicy,
+)
 
 
 # ============================================================================
@@ -60,6 +65,17 @@ class TrainConfig:
     # Network
     hidden_size: int = 256
 
+    # Opponent pool
+    pool_max_size: int = 16
+    pool_ema_beta: float = 0.05
+    pool_psro_beta: float = 3.0
+    pool_min_prob: float = 0.05
+    pool_add_interval: int = 10
+    pool_seed: int = 42
+    pool_use_random: bool = True
+    pool_use_heuristic: bool = True
+    pool_heuristic_styles: str = "conservative,aggressive"
+
     # Logging
     log_interval: int = 5
     save_interval: int = 50
@@ -69,6 +85,12 @@ class TrainConfig:
     # Misc
     seed: int = 42
     cuda: bool = True
+
+
+def _parse_heuristic_styles(styles: str) -> List[str]:
+    if not styles:
+        return []
+    return [s.strip() for s in styles.split(",") if s.strip()]
 
 
 def train(config: TrainConfig):
@@ -82,6 +104,7 @@ def train(config: TrainConfig):
     torch.manual_seed(config.seed)
     if device.type == "cuda":
         torch.cuda.manual_seed(config.seed)
+    np.random.seed(config.seed)
 
     # Create environment
     env = GPUPokerEnv(config.num_envs, device)
@@ -92,6 +115,36 @@ def train(config: TrainConfig):
     # Create network
     network = PolicyNetwork(env.obs_dim, env.num_actions, config.hidden_size).to(device)
     optimizer = optim.Adam(network.parameters(), lr=config.learning_rate)
+
+    # Opponent pool
+    pool = OpponentPool(
+        obs_dim=env.obs_dim,
+        num_actions=env.num_actions,
+        hidden_size=config.hidden_size,
+        device=device,
+        max_size=config.pool_max_size,
+        ema_beta=config.pool_ema_beta,
+        psro_beta=config.pool_psro_beta,
+        min_prob=config.pool_min_prob,
+        seed=config.pool_seed,
+    )
+
+    if config.pool_use_random:
+        pool.add_fixed("random", GPURandomPolicy(seed=config.pool_seed), protected=True)
+
+    if config.pool_use_heuristic:
+        for style in _parse_heuristic_styles(config.pool_heuristic_styles):
+            pool.add_fixed(
+                f"heuristic_{style}",
+                GPUHeuristicPolicy(env.mask_computer, style=style),
+                protected=True,
+            )
+
+    if not pool.entries:
+        raise ValueError("Opponent pool is empty. Enable random or heuristic opponents.")
+
+    # Initial opponent assignments: [num_envs, 3] for players 1,2,3
+    opponent_ids = pool.sample_opponents(config.num_envs, seats=3)
 
     # Logging
     os.makedirs(config.checkpoint_dir, exist_ok=True)
@@ -115,6 +168,61 @@ def train(config: TrainConfig):
     print(f"\nTraining for {num_updates} updates...")
     print(f"Batch size: {batch_size}, Minibatch size: {minibatch_size}")
 
+    def update_pool_and_assignments(
+        rewards: torch.Tensor,
+        dones: torch.Tensor,
+        new_state,
+    ) -> None:
+        nonlocal total_games, total_wins, opponent_ids
+
+        if not dones.any():
+            return
+
+        done_idx = dones.nonzero().squeeze(-1)
+        done_idx_cpu = done_idx.cpu().numpy()
+
+        # Update win counts
+        for i in done_idx:
+            winner = new_state.winner[i].item()
+            if winner >= 0:
+                total_wins[winner] += 1
+        total_games += dones.sum().item()
+
+        # Update opponent pool stats
+        opp_ids_done = opponent_ids[done_idx_cpu]
+        learner_scores = rewards[done_idx, 0].detach().cpu().numpy()
+        opp_scores = rewards[done_idx, 1:4].detach().cpu().numpy()
+        pool.update_stats(opp_ids_done, learner_scores, opp_scores)
+
+        # Resample opponents for finished envs
+        opponent_ids[done_idx_cpu] = pool.sample_opponents(len(done_idx_cpu), seats=3)
+
+    def select_opponent_actions(
+        actions: torch.Tensor,
+        obs: torch.Tensor,
+        action_mask: torch.Tensor,
+        current_player: torch.Tensor,
+        active_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        current_cpu = current_player.cpu().numpy()
+        active_cpu = active_mask.cpu().numpy()
+
+        for player_id in (1, 2, 3):
+            envs = np.where(active_cpu & (current_cpu == player_id))[0]
+            if envs.size == 0:
+                continue
+
+            opp_ids = opponent_ids[envs, player_id - 1]
+            for opp_id in np.unique(opp_ids):
+                subset = envs[opp_ids == opp_id]
+                if subset.size == 0:
+                    continue
+                idx = torch.tensor(subset, device=device, dtype=torch.long)
+                policy = pool.entries[int(opp_id)].policy
+                actions[idx] = policy.select_actions(obs[idx], action_mask[idx])
+
+        return actions
+
     for update in range(1, num_updates + 1):
         # Storage for rollout
         obs_buf = []
@@ -124,45 +232,121 @@ def train(config: TrainConfig):
         done_buf = []
         val_buf = []
         mask_buf = []
+        last_step_idx = -np.ones(config.num_envs, dtype=np.int32)
 
-        # Collect rollout
+        # Collect rollout (one learner action per env per step)
         for step in range(config.rollout_steps):
+            pending = torch.ones(config.num_envs, dtype=torch.bool, device=device)
+            step_obs = torch.zeros(config.num_envs, env.obs_dim, device=device)
+            step_act = torch.zeros(config.num_envs, dtype=torch.long, device=device)
+            step_logp = torch.zeros(config.num_envs, device=device)
+            step_val = torch.zeros(config.num_envs, device=device)
+            step_rew = torch.zeros(config.num_envs, device=device)
+            step_done = torch.zeros(config.num_envs, dtype=torch.bool, device=device)
+            step_mask = torch.zeros(config.num_envs, env.num_actions, dtype=torch.bool, device=device)
+
+            while pending.any():
+                obs, action_mask = env.get_obs_and_mask(state)
+                actions = torch.zeros(config.num_envs, dtype=torch.long, device=device)
+
+                learner_envs = pending & (state.current_player == 0)
+                if learner_envs.any():
+                    idx = learner_envs.nonzero(as_tuple=False).squeeze(-1)
+                    with torch.no_grad():
+                        actions_l, logp_l, val_l = network.get_action(
+                            obs[idx], action_mask[idx]
+                        )
+                    actions[idx] = actions_l
+                else:
+                    idx = None
+                    logp_l = None
+                    val_l = None
+
+                opponent_active = pending & (state.current_player != 0)
+                if opponent_active.any():
+                    actions = select_opponent_actions(
+                        actions, obs, action_mask, state.current_player, opponent_active
+                    )
+
+                new_state, rewards, dones = env.step(state, actions, active_mask=pending)
+                total_steps += int(pending.sum().item())
+
+                update_pool_and_assignments(rewards, dones, new_state)
+
+                if learner_envs.any():
+                    step_obs[idx] = obs[idx]
+                    step_act[idx] = actions[idx]
+                    step_logp[idx] = logp_l
+                    step_val[idx] = val_l
+                    step_rew[idx] = rewards[idx, 0]
+                    step_done[idx] = dones[idx]
+                    step_mask[idx] = action_mask[idx]
+                    pending[idx] = False
+                    idx_cpu = idx.detach().cpu().numpy()
+                    last_step_idx[idx_cpu] = step
+
+                if dones.any():
+                    done_idx = dones.nonzero().squeeze(-1)
+                    done_idx_cpu = done_idx.detach().cpu().numpy()
+                    learner_envs_cpu = learner_envs.detach().cpu().numpy()
+                    for env_id in done_idx_cpu:
+                        if not learner_envs_cpu[env_id]:
+                            last_idx = int(last_step_idx[env_id])
+                            if 0 <= last_idx < len(rew_buf):
+                                rew_buf[last_idx][env_id] = rewards[env_id, 0]
+                                done_buf[last_idx][env_id] = True
+                        last_step_idx[env_id] = -1
+
+                if dones.any():
+                    state = env.reset_done_envs(new_state, dones)
+                else:
+                    state = new_state
+
+            obs_buf.append(step_obs)
+            act_buf.append(step_act)
+            logp_buf.append(step_logp)
+            rew_buf.append(step_rew)
+            done_buf.append(step_done)
+            val_buf.append(step_val)
+            mask_buf.append(step_mask)
+
+        # Bootstrap value: advance opponents until learner's turn, then evaluate value
+        last_value = torch.zeros(config.num_envs, device=device)
+        pending = torch.ones(config.num_envs, dtype=torch.bool, device=device)
+        while pending.any():
             obs, action_mask = env.get_obs_and_mask(state)
 
-            with torch.no_grad():
-                actions, log_probs, values = network.get_action(obs, action_mask)
+            learner_envs = pending & (state.current_player == 0)
+            if learner_envs.any():
+                idx = learner_envs.nonzero(as_tuple=False).squeeze(-1)
+                with torch.no_grad():
+                    _, _, values = network.get_action(obs[idx], action_mask[idx])
+                last_value[idx] = values
+                pending[idx] = False
 
-            new_state, rewards, dones = env.step(state, actions)
+            opponent_active = pending & (state.current_player != 0)
+            if opponent_active.any():
+                actions = torch.zeros(config.num_envs, dtype=torch.long, device=device)
+                actions = select_opponent_actions(
+                    actions, obs, action_mask, state.current_player, opponent_active
+                )
+                new_state, rewards, dones = env.step(state, actions, active_mask=opponent_active)
+                total_steps += int(opponent_active.sum().item())
 
-            # Get current player's reward
-            player_rewards = rewards.gather(1, state.current_player.unsqueeze(1)).squeeze(1)
+                update_pool_and_assignments(rewards, dones, new_state)
 
-            # Store
-            obs_buf.append(obs)
-            act_buf.append(actions)
-            logp_buf.append(log_probs)
-            rew_buf.append(player_rewards)
-            done_buf.append(dones)
-            val_buf.append(values)
-            mask_buf.append(action_mask)
-
-            # Track wins
-            if dones.any():
-                done_idx = dones.nonzero().squeeze(-1)
-                for i in done_idx:
-                    winner = new_state.winner[i].item()
-                    if winner >= 0:
-                        total_wins[winner] += 1
-                total_games += dones.sum().item()
-
-            # Reset done envs
-            state = env.reset_done_envs(new_state, dones)
-            total_steps += config.num_envs
-
-        # Get bootstrap value
-        with torch.no_grad():
-            last_obs, last_mask = env.get_obs_and_mask(state)
-            _, _, last_value = network.get_action(last_obs, last_mask)
+                if dones.any():
+                    done_idx = dones.nonzero().squeeze(-1)
+                    done_idx_cpu = done_idx.detach().cpu().numpy()
+                    for env_id in done_idx_cpu:
+                        last_idx = int(last_step_idx[env_id])
+                        if 0 <= last_idx < len(rew_buf):
+                            rew_buf[last_idx][env_id] = rewards[env_id, 0]
+                            done_buf[last_idx][env_id] = True
+                        last_step_idx[env_id] = -1
+                    state = env.reset_done_envs(new_state, dones)
+                else:
+                    state = new_state
 
         # Stack buffers
         obs_buf = torch.stack(obs_buf)  # [T, B, obs_dim]
@@ -234,10 +418,13 @@ def train(config: TrainConfig):
 
         # Logging
         elapsed = time.time() - start_time
-        sps = total_steps / elapsed
+        sps = total_steps / elapsed if elapsed > 0 else 0.0
 
         if update % config.log_interval == 0:
             win_rate = total_wins[0] / max(1, total_games) * 100
+            pool_evs = [entry.stats.ev_ema for entry in pool.entries]
+            pool_mean_ev = float(np.mean(pool_evs)) if pool_evs else 0.0
+            pool_min_ev = float(np.min(pool_evs)) if pool_evs else 0.0
 
             print(
                 f"Update {update}/{num_updates} | "
@@ -245,12 +432,16 @@ def train(config: TrainConfig):
                 f"Games: {total_games} | "
                 f"SPS: {sps:.0f} | "
                 f"Win%: {win_rate:.1f}% | "
-                f"Loss: {loss.item():.4f}"
+                f"Loss: {loss.item():.4f} | "
+                f"Pool: {len(pool.entries)}"
             )
 
             writer.add_scalar("charts/SPS", sps, total_steps)
             writer.add_scalar("charts/games", total_games, total_steps)
             writer.add_scalar("charts/win_rate_p0", win_rate, total_steps)
+            writer.add_scalar("pool/size", len(pool.entries), total_steps)
+            writer.add_scalar("pool/ev_mean", pool_mean_ev, total_steps)
+            writer.add_scalar("pool/ev_min", pool_min_ev, total_steps)
             writer.add_scalar("losses/total", loss.item(), total_steps)
             writer.add_scalar("losses/policy", policy_loss.item(), total_steps)
             writer.add_scalar("losses/value", value_loss.item(), total_steps)
@@ -270,6 +461,10 @@ def train(config: TrainConfig):
                 ckpt_path,
             )
             print(f"Saved checkpoint: {ckpt_path}")
+
+        # Add snapshot to pool
+        if config.pool_add_interval > 0 and update % config.pool_add_interval == 0:
+            pool.add_snapshot(f"snapshot_{total_steps}", network.state_dict(), added_step=total_steps)
 
     # Final save
     final_path = os.path.join(config.checkpoint_dir, f"{run_name}_final.pt")
@@ -319,6 +514,17 @@ def main():
     # Network
     parser.add_argument("--hidden-size", type=int, default=256)
 
+    # Opponent pool
+    parser.add_argument("--pool-max-size", type=int, default=16)
+    parser.add_argument("--pool-ema-beta", type=float, default=0.05)
+    parser.add_argument("--pool-psro-beta", type=float, default=3.0)
+    parser.add_argument("--pool-min-prob", type=float, default=0.05)
+    parser.add_argument("--pool-add-interval", type=int, default=10)
+    parser.add_argument("--pool-seed", type=int, default=42)
+    parser.add_argument("--pool-no-random", action="store_true")
+    parser.add_argument("--pool-no-heuristic", action="store_true")
+    parser.add_argument("--pool-heuristic-styles", type=str, default="conservative,aggressive")
+
     # Logging
     parser.add_argument("--log-interval", type=int, default=5)
     parser.add_argument("--save-interval", type=int, default=50)
@@ -345,6 +551,15 @@ def main():
         vf_coef=args.vf_coef,
         max_grad_norm=args.max_grad_norm,
         hidden_size=args.hidden_size,
+        pool_max_size=args.pool_max_size,
+        pool_ema_beta=args.pool_ema_beta,
+        pool_psro_beta=args.pool_psro_beta,
+        pool_min_prob=args.pool_min_prob,
+        pool_add_interval=args.pool_add_interval,
+        pool_seed=args.pool_seed,
+        pool_use_random=not args.pool_no_random,
+        pool_use_heuristic=not args.pool_no_heuristic,
+        pool_heuristic_styles=args.pool_heuristic_styles,
         log_interval=args.log_interval,
         save_interval=args.save_interval,
         checkpoint_dir=args.checkpoint_dir,
