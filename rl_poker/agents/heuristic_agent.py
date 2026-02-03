@@ -24,9 +24,7 @@ from rl_poker.rules import (
     Card,
     Rank,
     HandType,
-    Hand,
     get_rank_counts,
-    sort_cards,
 )
 from rl_poker.moves.legal_moves import (
     Move,
@@ -35,8 +33,6 @@ from rl_poker.moves.legal_moves import (
     get_legal_moves,
     PASS_MOVE,
 )
-from rl_poker.moves.action_encoding import ActionSpace
-
 
 class HeuristicAgent:
     """Agent that uses heuristic rules for decision-making.

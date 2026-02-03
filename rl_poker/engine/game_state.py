@@ -25,7 +25,6 @@ from dataclasses import dataclass, field
 from enum import IntEnum, auto
 from typing import List, Optional, Dict, Tuple, Set
 import random
-import copy
 
 from rl_poker.rules import (
     Card,

@@ -16,9 +16,8 @@ Action space structure (fixed indices):
 """
 
 import torch
-import numpy as np
 from itertools import combinations_with_replacement
-from typing import List, Tuple, Dict, Optional
+from typing import List, Tuple
 from dataclasses import dataclass
 
 from rl_poker.rules.ranks import Rank, Suit, Card

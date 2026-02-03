@@ -5,12 +5,8 @@ from available legal moves. Useful for testing and as a baseline
 opponent for evaluation.
 """
 
-from typing import List, Optional, Protocol
+from typing import Optional, Protocol
 import numpy as np
-
-from rl_poker.moves.legal_moves import Move, get_legal_moves, MoveContext
-from rl_poker.moves.action_encoding import ActionSpace, sample_random_action
-from rl_poker.rules import Card
 
 
 class BaseAgent(Protocol):
