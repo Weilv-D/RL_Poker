@@ -62,9 +62,18 @@ class HistoryBuffer:
         self._pos[env_ids] = (pos + 1) % self.config.window
 
     def get_sequence(self, env_ids: Optional[torch.Tensor] = None) -> Optional[torch.Tensor]:
-        """Return history sequence for envs: [B, window, feature_dim]."""
+        """Return history sequence for envs in chronological order: [B, window, feature_dim]."""
         if self.buffer is None:
             return None
         if env_ids is None:
-            return self.buffer
-        return self.buffer[env_ids]
+            buf = self.buffer
+            pos = self._pos
+        else:
+            buf = self.buffer[env_ids]
+            pos = self._pos[env_ids]
+
+        window = self.config.window
+        feat_dim = self.config.feature_dim
+        idx = (torch.arange(window, device=self.device).unsqueeze(0) + pos.unsqueeze(1)) % window
+        idx = idx.unsqueeze(2).expand(-1, -1, feat_dim)
+        return buf.gather(1, idx)

@@ -70,17 +70,18 @@ class GPUPokerEnv:
     CARDS_PER_PLAYER = 13
     HEART_THREE_IDX = 0  # card_idx for Heart 3 = suit(0)*13 + rank(0)
 
-    def __init__(self, num_envs: int, device: torch.device):
+    def __init__(self, num_envs: int, device: torch.device, reveal_opponent_ranks: bool = False):
         self.num_envs = num_envs
         self.device = device
+        self.reveal_opponent_ranks = reveal_opponent_ranks
 
         # Action mask computer
         self.mask_computer = GPUActionMaskComputer(device)
         self.num_actions = self.mask_computer.num_actions
 
         # Observation dimension
-        # [hand(52) + rank_counts(13) + other_rank_counts(3*13) + context(5)]
-        self.obs_dim = 52 + 13 + 39 + 5
+        # [hand(52) + rank_counts(13) + context(5)] + optional other_rank_counts(3*13)
+        self.obs_dim = 52 + 13 + 5 + (39 if reveal_opponent_ranks else 0)
 
         # Pre-compute helper tensors
         self._init_tensors()
@@ -173,14 +174,16 @@ class GPUPokerEnv:
 
         # Other players' rank counts (visible information)
         # Rotate so index 0 is current player
-        other_rank_counts = []
-        for offset in [1, 2, 3]:
-            other_p = (state.current_player + offset) % 4
-            other_rc = state.rank_counts.gather(1, other_p.view(B, 1, 1).expand(-1, 1, 13)).squeeze(
-                1
-            )
-            other_rank_counts.append(other_rc)
-        other_rank_counts = torch.cat(other_rank_counts, dim=1)  # [B, 39]
+        other_rank_counts = None
+        if self.reveal_opponent_ranks:
+            other_rank_counts = []
+            for offset in [1, 2, 3]:
+                other_p = (state.current_player + offset) % 4
+                other_rc = state.rank_counts.gather(
+                    1, other_p.view(B, 1, 1).expand(-1, 1, 13)
+                ).squeeze(1)
+                other_rank_counts.append(other_rc)
+            other_rank_counts = torch.cat(other_rank_counts, dim=1)  # [B, 39]
 
         # Context features
         # is_leading: True when starting new round (no previous play to beat)
@@ -198,15 +201,10 @@ class GPUPokerEnv:
         )  # [B, 5]
 
         # Combine observation
-        obs = torch.cat(
-            [
-                my_hand.float(),
-                my_rank_counts.float() / 4,  # Normalize to [0, 1]
-                other_rank_counts.float() / 4,
-                context,
-            ],
-            dim=1,
-        )
+        obs_parts = [my_hand.float(), my_rank_counts.float() / 4, context]
+        if self.reveal_opponent_ranks:
+            obs_parts.insert(2, other_rank_counts.float() / 4)
+        obs = torch.cat(obs_parts, dim=1)
 
         # Compute action mask
         can_pass = ~is_leading

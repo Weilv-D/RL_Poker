@@ -56,3 +56,27 @@ class RecurrentPolicyNetwork(nn.Module):
         logits = torch.where(action_mask, logits, torch.tensor(-1e8, device=obs.device))
         values = self.value_head(features).squeeze(-1)
         return logits, values
+
+    def get_action(
+        self, obs: torch.Tensor, action_mask: torch.Tensor, seq: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        logits, values = self.forward(obs, action_mask, seq)
+        probs = torch.softmax(logits, dim=-1)
+        dist = torch.distributions.Categorical(probs)
+        actions = dist.sample()
+        log_probs = dist.log_prob(actions)
+        return actions, log_probs, values
+
+    def evaluate_actions(
+        self,
+        obs: torch.Tensor,
+        action_mask: torch.Tensor,
+        actions: torch.Tensor,
+        seq: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        logits, values = self.forward(obs, action_mask, seq)
+        probs = torch.softmax(logits, dim=-1)
+        dist = torch.distributions.Categorical(probs)
+        log_probs = dist.log_prob(actions)
+        entropy = dist.entropy().mean()
+        return log_probs, values, entropy

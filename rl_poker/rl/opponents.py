@@ -13,7 +13,12 @@ from rl_poker.rl.policy import PolicyNetwork
 class OpponentPolicy(Protocol):
     """Protocol for GPU-compatible opponent policies."""
 
-    def select_actions(self, obs: torch.Tensor, action_mask: torch.Tensor) -> torch.Tensor:
+    def select_actions(
+        self,
+        obs: torch.Tensor,
+        action_mask: torch.Tensor,
+        seq: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         """Select an action for each env in the batch."""
         ...
 
@@ -27,9 +32,30 @@ class PolicyNetworkOpponent:
         for param in self.network.parameters():
             param.requires_grad = False
 
-    def select_actions(self, obs: torch.Tensor, action_mask: torch.Tensor) -> torch.Tensor:
+    def select_actions(
+        self, obs: torch.Tensor, action_mask: torch.Tensor, seq: torch.Tensor | None = None
+    ) -> torch.Tensor:
         with torch.no_grad():
             actions, _, _ = self.network.get_action(obs, action_mask)
+        return actions
+
+
+class RecurrentPolicyOpponent:
+    """Frozen policy wrapper for a RecurrentPolicyNetwork snapshot."""
+
+    def __init__(self, network):
+        self.network = network
+        self.network.eval()
+        for param in self.network.parameters():
+            param.requires_grad = False
+
+    def select_actions(
+        self, obs: torch.Tensor, action_mask: torch.Tensor, seq: torch.Tensor | None = None
+    ) -> torch.Tensor:
+        if seq is None:
+            raise ValueError("Sequence input required for recurrent opponent policy")
+        with torch.no_grad():
+            actions, _, _ = self.network.get_action(obs, action_mask, seq)
         return actions
 
 
@@ -39,7 +65,9 @@ class GPURandomPolicy:
     def __init__(self, seed: Optional[int] = None):
         self.rng = np.random.default_rng(seed)
 
-    def select_actions(self, obs: torch.Tensor, action_mask: torch.Tensor) -> torch.Tensor:
+    def select_actions(
+        self, obs: torch.Tensor, action_mask: torch.Tensor, seq: torch.Tensor | None = None
+    ) -> torch.Tensor:
         mask = action_mask.float()
         # Fallback if mask invalid (should not happen)
         denom = mask.sum(dim=1, keepdim=True).clamp(min=1.0)
@@ -87,7 +115,9 @@ class GPUHeuristicPolicy:
         base[self.mask_computer.pass_idx] = 0.0
         return base
 
-    def select_actions(self, obs: torch.Tensor, action_mask: torch.Tensor) -> torch.Tensor:
+    def select_actions(
+        self, obs: torch.Tensor, action_mask: torch.Tensor, seq: torch.Tensor | None = None
+    ) -> torch.Tensor:
         # Expand base scores to batch
         scores = self._base_scores.unsqueeze(0).expand(action_mask.shape[0], -1).clone()
 
@@ -141,6 +171,9 @@ class OpponentPool:
         psro_beta: float = 3.0,
         min_prob: float = 0.05,
         seed: Optional[int] = None,
+        recurrent: bool = False,
+        history_feature_dim: int = 0,
+        gru_hidden: int = 128,
     ):
         self.obs_dim = obs_dim
         self.num_actions = num_actions
@@ -152,17 +185,37 @@ class OpponentPool:
         self.min_prob = min_prob
         self.rng = np.random.default_rng(seed)
         self.entries: List[OpponentEntry] = []
+        self.recurrent = recurrent
+        self.history_feature_dim = history_feature_dim
+        self.gru_hidden = gru_hidden
 
     def add_fixed(self, name: str, policy: OpponentPolicy, protected: bool = True) -> None:
         self.entries.append(OpponentEntry(name=name, policy=policy, protected=protected))
 
     def add_snapshot(self, name: str, state_dict: dict, added_step: int = 0) -> None:
-        network = PolicyNetwork(self.obs_dim, self.num_actions, self.hidden_size).to(self.device)
-        network.load_state_dict(state_dict)
+        if self.recurrent:
+            from rl_poker.rl.recurrent import RecurrentPolicyNetwork
+
+            if self.history_feature_dim <= 0:
+                raise ValueError("history_feature_dim must be set for recurrent pool snapshots")
+            network = RecurrentPolicyNetwork(
+                self.obs_dim,
+                self.num_actions,
+                self.history_feature_dim,
+                hidden_size=self.hidden_size,
+                gru_hidden=self.gru_hidden,
+            ).to(self.device)
+            network.load_state_dict(state_dict)
+            policy = RecurrentPolicyOpponent(network)
+        else:
+            network = PolicyNetwork(self.obs_dim, self.num_actions, self.hidden_size).to(self.device)
+            network.load_state_dict(state_dict)
+            policy = PolicyNetworkOpponent(network)
+
         self.entries.append(
             OpponentEntry(
                 name=name,
-                policy=PolicyNetworkOpponent(network),
+                policy=policy,
                 protected=False,
                 added_step=added_step,
             )

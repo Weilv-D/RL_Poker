@@ -25,6 +25,8 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.tensorboard.writer import SummaryWriter
 
+import torch.nn.functional as F
+
 from rl_poker.rl import (
     GPUPokerEnv,
     PolicyNetwork,
@@ -32,6 +34,9 @@ from rl_poker.rl import (
     OpponentPool,
     GPURandomPolicy,
     GPUHeuristicPolicy,
+    HistoryConfig,
+    HistoryBuffer,
+    RecurrentPolicyNetwork,
 )
 
 
@@ -78,6 +83,11 @@ class TrainConfig:
     # Shaping reward
     shaping_alpha: float = 0.1
     shaping_anneal_updates: int = 200
+    # Memory/belief
+    use_recurrent: bool = True
+    history_window: int = 16
+    reveal_opponent_ranks: bool = False
+    gru_hidden: int = 128
 
     # Logging
     log_interval: int = 5
@@ -110,18 +120,89 @@ def train(config: TrainConfig):
     np.random.seed(config.seed)
 
     # Create environment
-    env = GPUPokerEnv(config.num_envs, device)
+    env = GPUPokerEnv(
+        config.num_envs, device, reveal_opponent_ranks=config.reveal_opponent_ranks
+    )
+    # History feature setup
+    num_action_types = int(env.mask_computer.action_types.max().item()) + 1
+    max_action_length = int(env.mask_computer.action_lengths.max().item())
+    history_feature_dim = 4 + num_action_types + 4  # player_onehot + type_onehot + 4 scalars
+    history_config = HistoryConfig(
+        enabled=config.use_recurrent,
+        window=config.history_window,
+        feature_dim=history_feature_dim,
+    )
+    history_buffer = HistoryBuffer(config.num_envs, history_config, device)
+
+    augmented_obs_dim = env.obs_dim + 39 + 3 + 13
+
     print(f"Environments: {config.num_envs}")
-    print(f"Observation dim: {env.obs_dim}")
+    print(f"Observation dim (base): {env.obs_dim}")
+    print(f"Observation dim (augmented): {augmented_obs_dim}")
     print(f"Action space: {env.num_actions}")
 
+    # Public played counts for belief features
+    public_played_counts = torch.zeros(config.num_envs, 13, device=device, dtype=torch.float32)
+
+    def build_history_features(actions: torch.Tensor, players: torch.Tensor) -> torch.Tensor:
+        action_types = env.mask_computer.action_types[actions]
+        action_ranks = env.mask_computer.action_ranks[actions].clamp(min=0)
+        action_lengths = env.mask_computer.action_lengths[actions]
+        action_is_exempt = env.mask_computer.action_is_exemption[actions].float()
+        is_pass = (actions == 0).float()
+
+        player_onehot = F.one_hot(players, num_classes=4).float()
+        type_onehot = F.one_hot(action_types, num_classes=num_action_types).float()
+        action_rank_norm = (action_ranks.float() / 12.0).unsqueeze(1)
+        action_len_norm = (action_lengths.float() / max_action_length).unsqueeze(1)
+        scalars = torch.cat(
+            [action_rank_norm, action_len_norm, action_is_exempt.unsqueeze(1), is_pass.unsqueeze(1)],
+            dim=1,
+        )
+        return torch.cat([player_onehot, type_onehot, scalars], dim=1)
+
+    def augment_obs(obs: torch.Tensor, state) -> torch.Tensor:
+        B = obs.shape[0]
+        p_idx = state.current_player
+        my_rank_counts = state.rank_counts.gather(
+            1, p_idx.view(B, 1, 1).expand(-1, 1, 13)
+        ).squeeze(1)
+        remaining_rank_counts = (4.0 - my_rank_counts.float() - public_played_counts).clamp(min=0)
+        total_unknown = remaining_rank_counts.sum(dim=1).clamp(min=1.0)
+
+        beliefs = []
+        other_remaining = []
+        for offset in [1, 2, 3]:
+            other_p = (p_idx + offset) % 4
+            other_cards = state.cards_remaining.gather(1, other_p.view(B, 1)).squeeze(1)
+            other_remaining.append(other_cards.float())
+            frac = (other_cards.float() / total_unknown).unsqueeze(1)
+            beliefs.append(remaining_rank_counts * frac)
+
+        belief = torch.cat(beliefs, dim=1) / 4.0
+        other_remaining = torch.stack(other_remaining, dim=1) / 13.0
+        played_norm = public_played_counts / 4.0
+
+        return torch.cat([obs, belief, other_remaining, played_norm], dim=1)
+
+    augmented_obs_dim = env.obs_dim + 39 + 3 + 13
+
     # Create network
-    network = PolicyNetwork(env.obs_dim, env.num_actions, config.hidden_size).to(device)
+    if config.use_recurrent:
+        network = RecurrentPolicyNetwork(
+            augmented_obs_dim,
+            env.num_actions,
+            history_feature_dim,
+            hidden_size=config.hidden_size,
+            gru_hidden=config.gru_hidden,
+        ).to(device)
+    else:
+        network = PolicyNetwork(augmented_obs_dim, env.num_actions, config.hidden_size).to(device)
     optimizer = optim.Adam(network.parameters(), lr=config.learning_rate)
 
     # Opponent pool
     pool = OpponentPool(
-        obs_dim=env.obs_dim,
+        obs_dim=augmented_obs_dim,
         num_actions=env.num_actions,
         hidden_size=config.hidden_size,
         device=device,
@@ -130,6 +211,9 @@ def train(config: TrainConfig):
         psro_beta=config.pool_psro_beta,
         min_prob=config.pool_min_prob,
         seed=config.pool_seed,
+        recurrent=config.use_recurrent,
+        history_feature_dim=history_feature_dim,
+        gru_hidden=config.gru_hidden,
     )
 
     if config.pool_use_random:
@@ -157,6 +241,9 @@ def train(config: TrainConfig):
 
     # Training state
     state = env.reset()
+    if history_config.enabled:
+        history_buffer.reset_envs(torch.arange(config.num_envs, device=device))
+    public_played_counts.zero_()
     total_steps = 0
     total_games = 0
     total_wins = {i: 0 for i in range(4)}
@@ -263,7 +350,11 @@ def train(config: TrainConfig):
                     continue
                 idx = torch.tensor(subset, device=device, dtype=torch.long)
                 policy = pool.entries[int(opp_id)].policy
-                actions[idx] = policy.select_actions(obs[idx], action_mask[idx])
+                if config.use_recurrent:
+                    seq = history_buffer.get_sequence(idx)
+                    actions[idx] = policy.select_actions(obs[idx], action_mask[idx], seq=seq)
+                else:
+                    actions[idx] = policy.select_actions(obs[idx], action_mask[idx])
 
         return actions
 
@@ -276,30 +367,46 @@ def train(config: TrainConfig):
         done_buf = []
         val_buf = []
         mask_buf = []
+        seq_buf = []
         last_step_idx = -np.ones(config.num_envs, dtype=np.int32)
 
         # Collect rollout (one learner action per env per step)
         for step in range(config.rollout_steps):
             pending = torch.ones(config.num_envs, dtype=torch.bool, device=device)
-            step_obs = torch.zeros(config.num_envs, env.obs_dim, device=device)
+            step_obs = torch.zeros(config.num_envs, augmented_obs_dim, device=device)
             step_act = torch.zeros(config.num_envs, dtype=torch.long, device=device)
             step_logp = torch.zeros(config.num_envs, device=device)
             step_val = torch.zeros(config.num_envs, device=device)
             step_rew = torch.zeros(config.num_envs, device=device)
             step_done = torch.zeros(config.num_envs, dtype=torch.bool, device=device)
             step_mask = torch.zeros(config.num_envs, env.num_actions, dtype=torch.bool, device=device)
+            step_seq = None
+            if config.use_recurrent:
+                step_seq = torch.zeros(
+                    config.num_envs,
+                    history_config.window,
+                    history_feature_dim,
+                    device=device,
+                )
 
             while pending.any():
                 obs, action_mask = env.get_obs_and_mask(state)
+                obs = augment_obs(obs, state)
                 actions = torch.zeros(config.num_envs, dtype=torch.long, device=device)
 
                 learner_envs = pending & (state.current_player == 0)
                 if learner_envs.any():
                     idx = learner_envs.nonzero(as_tuple=False).squeeze(-1)
                     with torch.no_grad():
-                        actions_l, logp_l, val_l = network.get_action(
-                            obs[idx], action_mask[idx]
-                        )
+                        if config.use_recurrent:
+                            seq = history_buffer.get_sequence(idx)
+                            actions_l, logp_l, val_l = network.get_action(
+                                obs[idx], action_mask[idx], seq
+                            )
+                        else:
+                            actions_l, logp_l, val_l = network.get_action(
+                                obs[idx], action_mask[idx]
+                            )
                     actions[idx] = actions_l
                 else:
                     idx = None
@@ -315,6 +422,18 @@ def train(config: TrainConfig):
                 new_state, rewards, dones = env.step(state, actions, active_mask=pending)
                 total_steps += int(pending.sum().item())
 
+                # Update public played counts and history
+                played = (actions != 0) & pending
+                if played.any():
+                    action_counts = env.mask_computer.action_required_counts[actions]
+                    public_played_counts[played] += action_counts[played].float()
+
+                if history_config.enabled:
+                    env_ids = pending.nonzero(as_tuple=False).squeeze(-1)
+                    if env_ids.numel() > 0:
+                        feats = build_history_features(actions[env_ids], state.current_player[env_ids])
+                        history_buffer.push(feats, env_ids=env_ids)
+
                 if learner_envs.any():
                     step_obs[idx] = obs[idx]
                     step_act[idx] = actions[idx]
@@ -323,6 +442,8 @@ def train(config: TrainConfig):
                     step_rew[idx] = rewards[idx, 0]
                     step_done[idx] = dones[idx]
                     step_mask[idx] = action_mask[idx]
+                    if config.use_recurrent:
+                        step_seq[idx] = history_buffer.get_sequence(idx)
                     pending[idx] = False
                     idx_cpu = idx.detach().cpu().numpy()
                     last_step_idx[idx_cpu] = step
@@ -349,6 +470,10 @@ def train(config: TrainConfig):
                 )
 
                 if dones.any():
+                    done_idx = dones.nonzero().squeeze(-1)
+                    public_played_counts[done_idx] = 0.0
+                    if history_config.enabled:
+                        history_buffer.reset_envs(done_idx)
                     state = env.reset_done_envs(new_state, dones)
                 else:
                     state = new_state
@@ -360,20 +485,27 @@ def train(config: TrainConfig):
             done_buf.append(step_done)
             val_buf.append(step_val)
             mask_buf.append(step_mask)
+            if config.use_recurrent:
+                seq_buf.append(step_seq)
 
         # Bootstrap value: advance opponents until learner's turn, then evaluate value
         last_value = torch.zeros(config.num_envs, device=device)
         pending = torch.ones(config.num_envs, dtype=torch.bool, device=device)
         while pending.any():
             obs, action_mask = env.get_obs_and_mask(state)
+            obs = augment_obs(obs, state)
 
             learner_envs = pending & (state.current_player == 0)
-            if learner_envs.any():
-                idx = learner_envs.nonzero(as_tuple=False).squeeze(-1)
-                with torch.no_grad():
-                    _, _, values = network.get_action(obs[idx], action_mask[idx])
-                last_value[idx] = values
-                pending[idx] = False
+                if learner_envs.any():
+                    idx = learner_envs.nonzero(as_tuple=False).squeeze(-1)
+                    with torch.no_grad():
+                        if config.use_recurrent:
+                            seq = history_buffer.get_sequence(idx)
+                            _, _, values = network.get_action(obs[idx], action_mask[idx], seq)
+                        else:
+                            _, _, values = network.get_action(obs[idx], action_mask[idx])
+                    last_value[idx] = values
+                    pending[idx] = False
 
             opponent_active = pending & (state.current_player != 0)
             if opponent_active.any():
@@ -383,6 +515,17 @@ def train(config: TrainConfig):
                 )
                 new_state, rewards, dones = env.step(state, actions, active_mask=opponent_active)
                 total_steps += int(opponent_active.sum().item())
+
+                played = (actions != 0) & opponent_active
+                if played.any():
+                    action_counts = env.mask_computer.action_required_counts[actions]
+                    public_played_counts[played] += action_counts[played].float()
+
+                if history_config.enabled:
+                    env_ids = opponent_active.nonzero(as_tuple=False).squeeze(-1)
+                    if env_ids.numel() > 0:
+                        feats = build_history_features(actions[env_ids], state.current_player[env_ids])
+                        history_buffer.push(feats, env_ids=env_ids)
 
                 if dones.any():
                     done_idx = dones.nonzero().squeeze(-1)
@@ -404,6 +547,9 @@ def train(config: TrainConfig):
                 )
 
                 if dones.any():
+                    public_played_counts[done_idx] = 0.0
+                    if history_config.enabled:
+                        history_buffer.reset_envs(done_idx)
                     state = env.reset_done_envs(new_state, dones)
                 else:
                     state = new_state
@@ -416,6 +562,8 @@ def train(config: TrainConfig):
         done_buf = torch.stack(done_buf)  # [T, B]
         val_buf = torch.stack(val_buf)  # [T, B]
         mask_buf = torch.stack(mask_buf)  # [T, B, A]
+        if config.use_recurrent:
+            seq_buf = torch.stack(seq_buf)  # [T, B, W, F]
 
         # Add bootstrap value
         val_with_bootstrap = torch.cat([val_buf, last_value.unsqueeze(0)], dim=0)
@@ -433,6 +581,8 @@ def train(config: TrainConfig):
         ret_flat = returns.view(T * B)
         adv_flat = advantages.view(T * B)
         mask_flat = mask_buf.view(T * B, -1)
+        if config.use_recurrent:
+            seq_flat = seq_buf.view(T * B, history_config.window, history_feature_dim)
 
         # Normalize advantages
         adv_flat = (adv_flat - adv_flat.mean()) / (adv_flat.std() + 1e-8)
@@ -457,7 +607,13 @@ def train(config: TrainConfig):
                 mb_mask = mask_flat[mb_idx]
 
                 # Get current policy outputs
-                new_logp, new_val, entropy = network.evaluate_actions(mb_obs, mb_mask, mb_act)
+                if config.use_recurrent:
+                    mb_seq = seq_flat[mb_idx]
+                    new_logp, new_val, entropy = network.evaluate_actions(
+                        mb_obs, mb_mask, mb_act, mb_seq
+                    )
+                else:
+                    new_logp, new_val, entropy = network.evaluate_actions(mb_obs, mb_mask, mb_act)
 
                 # Policy loss
                 ratio = torch.exp(new_logp - mb_logp_old)
@@ -587,6 +743,11 @@ def main():
     # Shaping reward
     parser.add_argument("--shaping-alpha", type=float, default=0.1)
     parser.add_argument("--shaping-anneal-updates", type=int, default=200)
+    # Memory/belief
+    parser.add_argument("--no-recurrent", action="store_true")
+    parser.add_argument("--history-window", type=int, default=16)
+    parser.add_argument("--reveal-opponent-ranks", action="store_true")
+    parser.add_argument("--gru-hidden", type=int, default=128)
 
     # Logging
     parser.add_argument("--log-interval", type=int, default=5)
@@ -625,6 +786,10 @@ def main():
         pool_heuristic_styles=args.pool_heuristic_styles,
         shaping_alpha=args.shaping_alpha,
         shaping_anneal_updates=args.shaping_anneal_updates,
+        use_recurrent=not args.no_recurrent,
+        history_window=args.history_window,
+        reveal_opponent_ranks=args.reveal_opponent_ranks,
+        gru_hidden=args.gru_hidden,
         log_interval=args.log_interval,
         save_interval=args.save_interval,
         checkpoint_dir=args.checkpoint_dir,

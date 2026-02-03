@@ -9,6 +9,7 @@ from .opponents import (
     OpponentEntry,
     OpponentStats,
     PolicyNetworkOpponent,
+    RecurrentPolicyOpponent,
     GPURandomPolicy,
     GPUHeuristicPolicy,
 )
@@ -25,6 +26,7 @@ __all__ = [
     "OpponentEntry",
     "OpponentStats",
     "PolicyNetworkOpponent",
+    "RecurrentPolicyOpponent",
     "GPURandomPolicy",
     "GPUHeuristicPolicy",
     "HistoryConfig",
