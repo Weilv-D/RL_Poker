@@ -5,11 +5,12 @@ make future extensions (opponent pools, shaping rewards) easier.
 """
 
 from dataclasses import dataclass
-from typing import Tuple
+from typing import Tuple, List
 
 import torch
 
 from rl_poker.moves.gpu_action_mask import GPUActionMaskComputer
+from rl_poker.rules.ranks import Card, Rank, Suit
 
 
 @dataclass
@@ -151,6 +152,49 @@ class GPUPokerEnv:
             next_rank=torch.ones(B, dtype=torch.long, device=self.device),
             first_move=torch.ones(B, dtype=torch.bool, device=self.device),
             cards_remaining=torch.full((B, 4), 13, dtype=torch.long, device=self.device),
+            done=torch.zeros(B, dtype=torch.bool, device=self.device),
+            winner=torch.full((B,), -1, dtype=torch.long, device=self.device),
+        )
+
+    def state_from_hands(self, hands: List[List[Card]]) -> GameState:
+        """Create a GameState from explicit hands for testing/parity checks."""
+        if len(hands) != 4:
+            raise ValueError("Expected 4 hands for GPUPokerEnv.state_from_hands")
+
+        B = 1
+        hands_tensor = torch.zeros((B, 4, 52), dtype=torch.bool, device=self.device)
+        for p, hand in enumerate(hands):
+            for card in hand:
+                idx = card.suit.value * 13 + card.rank.value
+                hands_tensor[0, p, idx] = True
+
+        hands_by_rank = hands_tensor.view(B, 4, 4, 13).permute(0, 1, 3, 2)
+        rank_counts = hands_by_rank.sum(dim=3).to(torch.int32)
+        cards_remaining = rank_counts.sum(dim=2)
+
+        heart_three_idx = Suit.HEART.value * 13 + Rank.THREE.value
+        has_heart_three = hands_tensor[:, :, heart_three_idx]
+        starting_player = has_heart_three.int().argmax(dim=1)
+
+        return GameState(
+            hands=hands_tensor,
+            rank_counts=rank_counts,
+            current_player=starting_player,
+            prev_action=torch.zeros(B, dtype=torch.long, device=self.device),
+            prev_action_type=torch.zeros(B, dtype=torch.long, device=self.device),
+            prev_action_rank=torch.full((B,), -1, dtype=torch.long, device=self.device),
+            prev_action_length=torch.zeros(B, dtype=torch.long, device=self.device),
+            prev_action_is_exemption=torch.zeros(B, dtype=torch.bool, device=self.device),
+            prev_action_standard_type=torch.zeros(B, dtype=torch.long, device=self.device),
+            prev_player=torch.full((B,), -1, dtype=torch.long, device=self.device),
+            lead_player=starting_player.clone(),
+            consecutive_passes=torch.zeros(B, dtype=torch.long, device=self.device),
+            has_passed=torch.zeros((B, 4), dtype=torch.bool, device=self.device),
+            has_finished=torch.zeros((B, 4), dtype=torch.bool, device=self.device),
+            finish_rank=torch.zeros((B, 4), dtype=torch.long, device=self.device),
+            next_rank=torch.ones(B, dtype=torch.long, device=self.device),
+            first_move=torch.ones(B, dtype=torch.bool, device=self.device),
+            cards_remaining=cards_remaining.to(torch.long),
             done=torch.zeros(B, dtype=torch.bool, device=self.device),
             winner=torch.full((B,), -1, dtype=torch.long, device=self.device),
         )
