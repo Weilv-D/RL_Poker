@@ -102,14 +102,14 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --quality)
             QUALITY=1
-            NUM_ENVS="64"
-            TOTAL_TIMESTEPS="50000000"
-            ROLLOUT_STEPS="256"
+            NUM_ENVS="1024"
+            TOTAL_TIMESTEPS="210763776"
+            ROLLOUT_STEPS="64"
             HIDDEN_SIZE="256"
             LEARNING_RATE="2.5e-4"
             QUALITY_EXTRA_ARGS=(
                 --ppo-epochs 4
-                --num-minibatches 16
+                --num-minibatches 64
                 --gru-hidden 128
                 --history-window 32
                 --pool-max-size 32
