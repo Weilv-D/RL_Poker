@@ -14,7 +14,7 @@ Key features:
 
 Usage:
     python -m rl_poker.scripts.train --help
-    python -m rl_poker.scripts.train --num-envs 256 --total-timesteps 1000000
+    python -m rl_poker.scripts.train --num-envs 128 --total-timesteps 2000000
 """
 
 import argparse
@@ -578,10 +578,10 @@ class TrainConfig:
     """Training configuration."""
 
     # Environment
-    num_envs: int = 256
+    num_envs: int = 128
 
     # Training
-    total_timesteps: int = 1_000_000
+    total_timesteps: int = 2_000_000
     rollout_steps: int = 128
 
     # PPO hyperparameters
@@ -589,7 +589,7 @@ class TrainConfig:
     gamma: float = 0.99
     gae_lambda: float = 0.95
     ppo_epochs: int = 4
-    num_minibatches: int = 4
+    num_minibatches: int = 8
     clip_coef: float = 0.2
     ent_coef: float = 0.01
     vf_coef: float = 0.5
@@ -599,8 +599,8 @@ class TrainConfig:
     hidden_size: int = 256
 
     # Logging
-    log_interval: int = 10
-    save_interval: int = 100
+    log_interval: int = 5
+    save_interval: int = 50
     checkpoint_dir: str = "checkpoints"
     log_dir: str = "runs"
 
@@ -872,11 +872,11 @@ def main():
     parser = argparse.ArgumentParser(description="Train RL Poker agent with PPO")
 
     # Environment
-    parser.add_argument("--num-envs", type=int, default=256, help="Number of parallel environments")
+    parser.add_argument("--num-envs", type=int, default=128, help="Number of parallel environments")
 
     # Training
     parser.add_argument(
-        "--total-timesteps", type=int, default=1_000_000, help="Total training timesteps"
+        "--total-timesteps", type=int, default=2_000_000, help="Total training timesteps"
     )
     parser.add_argument("--rollout-steps", type=int, default=128, help="Steps per rollout")
 
@@ -885,7 +885,7 @@ def main():
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--gae-lambda", type=float, default=0.95)
     parser.add_argument("--ppo-epochs", type=int, default=4)
-    parser.add_argument("--num-minibatches", type=int, default=4)
+    parser.add_argument("--num-minibatches", type=int, default=8)
     parser.add_argument("--clip-coef", type=float, default=0.2)
     parser.add_argument("--ent-coef", type=float, default=0.01)
     parser.add_argument("--vf-coef", type=float, default=0.5)
@@ -895,8 +895,8 @@ def main():
     parser.add_argument("--hidden-size", type=int, default=256)
 
     # Logging
-    parser.add_argument("--log-interval", type=int, default=10)
-    parser.add_argument("--save-interval", type=int, default=100)
+    parser.add_argument("--log-interval", type=int, default=5)
+    parser.add_argument("--save-interval", type=int, default=50)
     parser.add_argument("--checkpoint-dir", type=str, default="checkpoints")
     parser.add_argument("--log-dir", type=str, default="runs")
 
