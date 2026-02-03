@@ -1,7 +1,5 @@
 """Utility functions for PPO training."""
 
-from typing import Tuple
-
 import torch
 
 
@@ -11,7 +9,7 @@ def compute_gae(
     dones: torch.Tensor,
     gamma: float,
     gae_lambda: float,
-) -> Tuple[torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor]:
     """Compute GAE advantages and returns.
 
     Args:

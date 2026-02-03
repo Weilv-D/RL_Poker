@@ -1,7 +1,8 @@
 """Opponent policies and PSRO-lite pool for GPU training."""
 
 from dataclasses import dataclass, field
-from typing import List, Optional, Protocol, Sequence
+from collections.abc import Sequence
+from typing import Protocol
 
 import numpy as np
 import torch
@@ -62,7 +63,7 @@ class RecurrentPolicyOpponent:
 class GPURandomPolicy:
     """Uniform random policy over legal actions (GPU)."""
 
-    def __init__(self, seed: Optional[int] = None):
+    def __init__(self, seed: int | None = None):
         self.rng = np.random.default_rng(seed)
 
     def select_actions(
@@ -187,29 +188,31 @@ class OpponentPool:
         ema_beta: float = 0.05,
         psro_beta: float = 3.0,
         min_prob: float = 0.05,
-        seed: Optional[int] = None,
+        seed: int | None = None,
         recurrent: bool = False,
         history_feature_dim: int = 0,
         gru_hidden: int = 128,
     ):
-        self.obs_dim = obs_dim
-        self.num_actions = num_actions
-        self.hidden_size = hidden_size
-        self.device = device
-        self.max_size = max_size
-        self.ema_beta = ema_beta
-        self.psro_beta = psro_beta
-        self.min_prob = min_prob
-        self.rng = np.random.default_rng(seed)
-        self.entries: List[OpponentEntry] = []
-        self.recurrent = recurrent
-        self.history_feature_dim = history_feature_dim
-        self.gru_hidden = gru_hidden
+        self.obs_dim: int = obs_dim
+        self.num_actions: int = num_actions
+        self.hidden_size: int = hidden_size
+        self.device: torch.device = device
+        self.max_size: int = max_size
+        self.ema_beta: float = ema_beta
+        self.psro_beta: float = psro_beta
+        self.min_prob: float = min_prob
+        self.rng: np.random.Generator = np.random.default_rng(seed)
+        self.entries: list[OpponentEntry] = []
+        self.recurrent: bool = recurrent
+        self.history_feature_dim: int = history_feature_dim
+        self.gru_hidden: int = gru_hidden
 
     def add_fixed(self, name: str, policy: OpponentPolicy, protected: bool = True) -> None:
         self.entries.append(OpponentEntry(name=name, policy=policy, protected=protected))
 
-    def add_snapshot(self, name: str, state_dict: dict, added_step: int = 0) -> None:
+    def add_snapshot(
+        self, name: str, state_dict: dict[str, torch.Tensor], added_step: int = 0
+    ) -> None:
         if self.recurrent:
             from rl_poker.rl.recurrent import RecurrentPolicyNetwork
 
@@ -287,7 +290,7 @@ class OpponentPool:
     def update_stats(
         self,
         opponent_ids: np.ndarray,
-        learner_scores: Sequence[float],
+        learner_scores: Sequence[float] | np.ndarray,
         opponent_scores: np.ndarray,
     ) -> None:
         """Update EV EMA for opponents.

@@ -17,7 +17,7 @@ import argparse
 import os
 import time
 from dataclasses import dataclass
-from typing import List
+from typing import cast
 
 import numpy as np
 import torch
@@ -28,6 +28,7 @@ from torch.utils.tensorboard.writer import SummaryWriter
 import torch.nn.functional as F
 
 from rl_poker.rl import (
+    GameState,
     GPUPokerEnv,
     PolicyNetwork,
     compute_gae,
@@ -106,7 +107,7 @@ class TrainConfig:
     cuda: bool = True
 
 
-def _parse_heuristic_styles(styles: str) -> List[str]:
+def _parse_heuristic_styles(styles: str) -> list[str]:
     if not styles:
         return []
     return [s.strip() for s in styles.split(",") if s.strip()]
@@ -120,9 +121,9 @@ def train(config: TrainConfig):
     print(f"Device: {device}")
 
     # Set seed
-    torch.manual_seed(config.seed)
+    _ = torch.manual_seed(config.seed)
     if device.type == "cuda":
-        torch.cuda.manual_seed(config.seed)
+        _ = torch.cuda.manual_seed(config.seed)
     np.random.seed(config.seed)
 
     # Create environment
@@ -173,17 +174,16 @@ def train(config: TrainConfig):
         )
         return torch.cat([player_onehot, type_onehot, scalars], dim=1)
 
-    def augment_obs(obs: torch.Tensor, state) -> torch.Tensor:
+    def augment_obs(obs: torch.Tensor, state: GameState) -> torch.Tensor:
         B = obs.shape[0]
         p_idx = state.current_player
         my_rank_counts = state.rank_counts.gather(
             1, p_idx.view(B, 1, 1).expand(-1, 1, 13)
         ).squeeze(1)
         remaining_rank_counts = (4.0 - my_rank_counts.float() - public_played_counts).clamp(min=0)
-        total_unknown = remaining_rank_counts.sum(dim=1).clamp(min=1.0)
 
-        beliefs = []
-        other_remaining = []
+        beliefs: list[torch.Tensor] = []
+        other_remaining: list[torch.Tensor] = []
         for offset in [1, 2, 3]:
             other_p = (p_idx + offset) % 4
             other_cards = state.cards_remaining.gather(1, other_p.view(B, 1)).squeeze(1)
@@ -212,8 +212,12 @@ def train(config: TrainConfig):
             hidden_size=config.hidden_size,
             gru_hidden=config.gru_hidden,
         ).to(device)
+        rec_net = cast(RecurrentPolicyNetwork, network)
+        policy_net: PolicyNetwork | None = None
     else:
         network = PolicyNetwork(augmented_obs_dim, env.num_actions, config.hidden_size).to(device)
+        policy_net = cast(PolicyNetwork, network)
+        rec_net = None
     optimizer = optim.Adam(network.parameters(), lr=config.learning_rate)
 
     # Opponent pool
@@ -273,29 +277,25 @@ def train(config: TrainConfig):
         raise ValueError("batch_size must be positive")
     if config.total_timesteps < batch_size:
         print(
-            f"Warning: total_timesteps ({config.total_timesteps}) < batch_size ({batch_size}); "
-            "running a single update."
+            f"Warning: total_timesteps ({config.total_timesteps}) < batch_size ({batch_size}); running a single update."
         )
         num_updates = 1
     else:
         num_updates = max(1, config.total_timesteps // batch_size)
         if config.total_timesteps % batch_size != 0:
             print(
-                f"Warning: total_timesteps ({config.total_timesteps}) not divisible by "
-                f"batch_size ({batch_size}); effective timesteps = {num_updates * batch_size}."
+                f"Warning: total_timesteps ({config.total_timesteps}) not divisible by batch_size ({batch_size}); effective timesteps = {num_updates * batch_size}."
             )
 
     if config.num_minibatches <= 0:
         raise ValueError("num_minibatches must be >= 1")
     if config.num_minibatches > batch_size:
         raise ValueError(
-            f"num_minibatches ({config.num_minibatches}) > batch_size ({batch_size}); "
-            "reduce num_minibatches or increase batch size."
+            f"num_minibatches ({config.num_minibatches}) > batch_size ({batch_size}); reduce num_minibatches or increase batch size."
         )
     if batch_size % config.num_minibatches != 0:
         print(
-            f"Warning: batch_size ({batch_size}) not divisible by num_minibatches "
-            f"({config.num_minibatches}); last minibatch will be smaller."
+            f"Warning: batch_size ({batch_size}) not divisible by num_minibatches ({config.num_minibatches}); last minibatch will be smaller."
         )
     minibatch_size = max(1, batch_size // config.num_minibatches)
 
@@ -328,9 +328,9 @@ def train(config: TrainConfig):
     def update_pool_and_assignments(
         rewards: torch.Tensor,
         dones: torch.Tensor,
-        new_state,
+        new_state: GameState,
         last_step_idx_buf: np.ndarray,
-        rew_buf_ref: List[torch.Tensor],
+        rew_buf_ref: list[torch.Tensor],
         current_step: int,
         step_rew_ref: torch.Tensor | None,
     ) -> None:
@@ -396,6 +396,7 @@ def train(config: TrainConfig):
                 policy = pool.entries[int(opp_id)].policy
                 if config.use_recurrent:
                     seq = history_buffer.get_sequence(idx)
+                    assert seq is not None
                     actions[idx] = policy.select_actions(obs[idx], action_mask[idx], seq=seq)
                 else:
                     actions[idx] = policy.select_actions(obs[idx], action_mask[idx])
@@ -404,14 +405,14 @@ def train(config: TrainConfig):
 
     for update in range(1, num_updates + 1):
         # Storage for rollout
-        obs_buf = []
-        act_buf = []
-        logp_buf = []
-        rew_buf = []
-        done_buf = []
-        val_buf = []
-        mask_buf = []
-        seq_buf = []
+        obs_buf: list[torch.Tensor] = []
+        act_buf: list[torch.Tensor] = []
+        logp_buf: list[torch.Tensor] = []
+        rew_buf: list[torch.Tensor] = []
+        done_buf: list[torch.Tensor] = []
+        val_buf: list[torch.Tensor] = []
+        mask_buf: list[torch.Tensor] = []
+        seq_buf: list[torch.Tensor] | None = [] if config.use_recurrent else None
         last_step_idx = -np.ones(config.num_envs, dtype=np.int32)
 
         # Collect rollout (one learner action per env per step)
@@ -424,7 +425,7 @@ def train(config: TrainConfig):
             step_rew = torch.zeros(config.num_envs, device=device)
             step_done = torch.zeros(config.num_envs, dtype=torch.bool, device=device)
             step_mask = torch.zeros(config.num_envs, env.num_actions, dtype=torch.bool, device=device)
-            step_seq = None
+            step_seq: torch.Tensor | None = None
             if config.use_recurrent:
                 step_seq = torch.zeros(
                     config.num_envs,
@@ -443,21 +444,19 @@ def train(config: TrainConfig):
                     idx = learner_envs.nonzero(as_tuple=False).squeeze(-1)
                     with torch.no_grad():
                         if config.use_recurrent:
+                            assert rec_net is not None
                             seq_l = history_buffer.get_sequence(idx)
-                            actions_l, logp_l, val_l = network.get_action(
+                            assert seq_l is not None
+                            actions_l, logp_l, val_l = rec_net.get_action(
                                 obs[idx], action_mask[idx], seq_l
                             )
                         else:
-                            seq_l = None
-                            actions_l, logp_l, val_l = network.get_action(
+                            assert policy_net is not None
+                            actions_l, logp_l, val_l = policy_net.get_action(
                                 obs[idx], action_mask[idx]
                             )
+                            seq_l = None
                     actions[idx] = actions_l
-                else:
-                    idx = None
-                    logp_l = None
-                    val_l = None
-                    seq_l = None
 
                 opponent_active = pending & (state.current_player != 0)
                 if opponent_active.any():
@@ -510,6 +509,8 @@ def train(config: TrainConfig):
                     step_done[idx] = dones[idx]
                     step_mask[idx] = action_mask[idx]
                     if config.use_recurrent:
+                        assert step_seq is not None
+                        assert seq_l is not None
                         step_seq[idx] = seq_l
                     pending[idx] = False
                     idx_cpu = idx.detach().cpu().numpy()
@@ -554,6 +555,8 @@ def train(config: TrainConfig):
             val_buf.append(step_val)
             mask_buf.append(step_mask)
             if config.use_recurrent:
+                assert seq_buf is not None
+                assert step_seq is not None
                 seq_buf.append(step_seq)
 
         # Bootstrap value: advance opponents until learner's turn, then evaluate value
@@ -568,10 +571,13 @@ def train(config: TrainConfig):
                 idx = learner_envs.nonzero(as_tuple=False).squeeze(-1)
                 with torch.no_grad():
                     if config.use_recurrent:
+                        assert rec_net is not None
                         seq = history_buffer.get_sequence(idx)
-                        _, _, values = network.get_action(obs[idx], action_mask[idx], seq)
+                        assert seq is not None
+                        _, _, values = rec_net.get_action(obs[idx], action_mask[idx], seq)
                     else:
-                        _, _, values = network.get_action(obs[idx], action_mask[idx])
+                        assert policy_net is not None
+                        _, _, values = policy_net.get_action(obs[idx], action_mask[idx])
                 last_value[idx] = values
                 pending[idx] = False
 
@@ -636,6 +642,7 @@ def train(config: TrainConfig):
                 )
 
                 if dones.any():
+                    done_idx = dones.nonzero().squeeze(-1)
                     public_played_counts[done_idx] = 0.0
                     opp_rank_logits[done_idx] = 0.0
                     if history_config.enabled:
@@ -652,8 +659,10 @@ def train(config: TrainConfig):
         done_buf = torch.stack(done_buf)  # [T, B]
         val_buf = torch.stack(val_buf)  # [T, B]
         mask_buf = torch.stack(mask_buf)  # [T, B, A]
+        seq_buf_tensor: torch.Tensor | None = None
         if config.use_recurrent:
-            seq_buf = torch.stack(seq_buf)  # [T, B, W, F]
+            assert seq_buf is not None
+            seq_buf_tensor = torch.stack(seq_buf)  # [T, B, W, F]
 
         # Add bootstrap value
         val_with_bootstrap = torch.cat([val_buf, last_value.unsqueeze(0)], dim=0)
@@ -671,8 +680,10 @@ def train(config: TrainConfig):
         ret_flat = returns.view(T * B)
         adv_flat = advantages.view(T * B)
         mask_flat = mask_buf.view(T * B, -1)
+        seq_flat: torch.Tensor | None = None
         if config.use_recurrent:
-            seq_flat = seq_buf.view(T * B, history_config.window, history_feature_dim)
+            assert seq_buf_tensor is not None
+            seq_flat = seq_buf_tensor.view(T * B, history_config.window, history_feature_dim)
 
         # Normalize advantages (skip if variance is too small)
         adv_mean = adv_flat.mean()
@@ -709,12 +720,17 @@ def train(config: TrainConfig):
 
                 # Get current policy outputs
                 if config.use_recurrent:
+                    assert rec_net is not None
+                    assert seq_flat is not None
                     mb_seq = seq_flat[mb_idx]
-                    new_logp, new_val, entropy = network.evaluate_actions(
+                    new_logp, new_val, entropy = rec_net.evaluate_actions(
                         mb_obs, mb_mask, mb_act, mb_seq
                     )
                 else:
-                    new_logp, new_val, entropy = network.evaluate_actions(mb_obs, mb_mask, mb_act)
+                    assert policy_net is not None
+                    new_logp, new_val, entropy = policy_net.evaluate_actions(
+                        mb_obs, mb_mask, mb_act
+                    )
 
                 # Policy loss
                 ratio = torch.exp(new_logp - mb_logp_old)
@@ -755,13 +771,7 @@ def train(config: TrainConfig):
             mean_entropy = sum_entropy / denom
 
             print(
-                f"Update {update}/{num_updates} | "
-                f"Steps: {total_steps:,} | "
-                f"Games: {total_games} | "
-                f"SPS: {sps:.0f} | "
-                f"Win%: {win_rate:.1f}% | "
-                f"Loss: {mean_loss:.4f} | "
-                f"Pool: {len(pool.entries)}"
+                f"Update {update}/{num_updates} | Steps: {total_steps:,} | Games: {total_games} | SPS: {sps:.0f} | Win%: {win_rate:.1f}% | Loss: {mean_loss:.4f} | Pool: {len(pool.entries)}"
             )
             if adv_norm_skipped:
                 print("Warning: advantage std too small; skipped normalization for this update.")

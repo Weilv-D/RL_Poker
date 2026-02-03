@@ -5,7 +5,6 @@ sequence-aware models (GRU/Transformer). Not used by default.
 """
 
 from dataclasses import dataclass
-from typing import Optional
 
 import torch
 
@@ -27,18 +26,18 @@ class HistoryBuffer:
     """
 
     def __init__(self, num_envs: int, config: HistoryConfig, device: torch.device):
-        self.config = config
-        self.device = device
-        self.num_envs = num_envs
+        self.config: HistoryConfig = config
+        self.device: torch.device = device
+        self.num_envs: int = num_envs
         if not config.enabled:
-            self.buffer = None
+            self.buffer: torch.Tensor | None = None
             return
         if config.feature_dim <= 0:
             raise ValueError("feature_dim must be > 0 when history is enabled")
         self.buffer = torch.zeros(
             num_envs, config.window, config.feature_dim, device=device, dtype=torch.float32
         )
-        self._pos = torch.zeros(num_envs, device=device, dtype=torch.long)
+        self._pos: torch.Tensor = torch.zeros(num_envs, device=device, dtype=torch.long)
 
     def reset_envs(self, env_ids: torch.Tensor) -> None:
         if self.buffer is None:
@@ -46,7 +45,7 @@ class HistoryBuffer:
         self.buffer[env_ids] = 0.0
         self._pos[env_ids] = 0
 
-    def push(self, features: torch.Tensor, env_ids: Optional[torch.Tensor] = None) -> None:
+    def push(self, features: torch.Tensor, env_ids: torch.Tensor | None = None) -> None:
         """Append features for given envs.
 
         Args:
@@ -61,7 +60,7 @@ class HistoryBuffer:
         self.buffer[env_ids, pos] = features
         self._pos[env_ids] = (pos + 1) % self.config.window
 
-    def get_sequence(self, env_ids: Optional[torch.Tensor] = None) -> Optional[torch.Tensor]:
+    def get_sequence(self, env_ids: torch.Tensor | None = None) -> torch.Tensor | None:
         """Return history sequence for envs in chronological order: [B, window, feature_dim]."""
         if self.buffer is None:
             return None

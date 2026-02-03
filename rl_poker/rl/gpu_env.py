@@ -5,7 +5,6 @@ make future extensions (opponent pools, shaping rewards) easier.
 """
 
 from dataclasses import dataclass
-from typing import Tuple, List
 
 import torch
 
@@ -67,36 +66,36 @@ class GPUPokerEnv:
     - First player to empty their hand wins
     """
 
-    NUM_PLAYERS = 4
-    CARDS_PER_PLAYER = 13
-    HEART_THREE_IDX = 0  # card_idx for Heart 3 = suit(0)*13 + rank(0)
+    NUM_PLAYERS: int = 4
+    CARDS_PER_PLAYER: int = 13
+    HEART_THREE_IDX: int = 0  # card_idx for Heart 3 = suit(0)*13 + rank(0)
 
     def __init__(self, num_envs: int, device: torch.device, reveal_opponent_ranks: bool = False):
-        self.num_envs = num_envs
-        self.device = device
-        self.reveal_opponent_ranks = reveal_opponent_ranks
+        self.num_envs: int = num_envs
+        self.device: torch.device = device
+        self.reveal_opponent_ranks: bool = reveal_opponent_ranks
 
         # Action mask computer
-        self.mask_computer = GPUActionMaskComputer(device)
-        self.num_actions = self.mask_computer.num_actions
+        self.mask_computer: GPUActionMaskComputer = GPUActionMaskComputer(device)
+        self.num_actions: int = self.mask_computer.num_actions
 
         # Observation dimension
         # [hand(52) + rank_counts(13) + context(5)] + optional other_rank_counts(3*13)
-        self.obs_dim = 52 + 13 + 5 + (39 if reveal_opponent_ranks else 0)
+        self.obs_dim: int = 52 + 13 + 5 + (39 if reveal_opponent_ranks else 0)
 
         # Pre-compute helper tensors
         self._init_tensors()
 
-    def _init_tensors(self):
+    def _init_tensors(self) -> None:
         """Pre-compute static tensors for efficiency."""
         # Rank lookup for cards: card_idx % 13 = rank
-        self.card_to_rank = torch.arange(52, device=self.device) % 13
+        self.card_to_rank: torch.Tensor = torch.arange(52, device=self.device) % 13
 
         # Suit lookup for cards: card_idx // 13 = suit
-        self.card_to_suit = torch.arange(52, device=self.device) // 13
+        self.card_to_suit: torch.Tensor = torch.arange(52, device=self.device) // 13
 
         # Suit combination table for pairs
-        self.suit_combo_table = torch.tensor(
+        self.suit_combo_table: torch.Tensor = torch.tensor(
             [[0, 1], [0, 2], [0, 3], [1, 2], [1, 3], [2, 3]],
             device=self.device,
             dtype=torch.long,
@@ -156,7 +155,7 @@ class GPUPokerEnv:
             winner=torch.full((B,), -1, dtype=torch.long, device=self.device),
         )
 
-    def state_from_hands(self, hands: List[List[Card]]) -> GameState:
+    def state_from_hands(self, hands: list[list[Card]]) -> GameState:
         """Create a GameState from explicit hands for testing/parity checks."""
         if len(hands) != 4:
             raise ValueError("Expected 4 hands for GPUPokerEnv.state_from_hands")
@@ -199,7 +198,7 @@ class GPUPokerEnv:
             winner=torch.full((B,), -1, dtype=torch.long, device=self.device),
         )
 
-    def get_obs_and_mask(self, state: GameState) -> Tuple[torch.Tensor, torch.Tensor]:
+    def get_obs_and_mask(self, state: GameState) -> tuple[torch.Tensor, torch.Tensor]:
         """Get observations and action masks for current players.
 
         Returns:
@@ -218,16 +217,16 @@ class GPUPokerEnv:
 
         # Other players' rank counts (visible information)
         # Rotate so index 0 is current player
-        other_rank_counts = None
+        other_rank_counts: torch.Tensor | None = None
         if self.reveal_opponent_ranks:
-            other_rank_counts = []
+            other_rank_counts_list: list[torch.Tensor] = []
             for offset in [1, 2, 3]:
                 other_p = (state.current_player + offset) % 4
                 other_rc = state.rank_counts.gather(
                     1, other_p.view(B, 1, 1).expand(-1, 1, 13)
                 ).squeeze(1)
-                other_rank_counts.append(other_rc)
-            other_rank_counts = torch.cat(other_rank_counts, dim=1)  # [B, 39]
+                other_rank_counts_list.append(other_rc)
+            other_rank_counts = torch.cat(other_rank_counts_list, dim=1)  # [B, 39]
 
         # Context features
         # is_leading: True when starting new round (no previous play to beat)
@@ -247,6 +246,7 @@ class GPUPokerEnv:
         # Combine observation
         obs_parts = [my_hand.float(), my_rank_counts.float() / 4, context]
         if self.reveal_opponent_ranks:
+            assert other_rank_counts is not None
             obs_parts.insert(2, other_rank_counts.float() / 4)
         obs = torch.cat(obs_parts, dim=1)
 
@@ -280,7 +280,7 @@ class GPUPokerEnv:
         state: GameState,
         actions: torch.Tensor,
         active_mask: torch.Tensor | None = None,
-    ) -> Tuple[GameState, torch.Tensor, torch.Tensor]:
+    ) -> tuple[GameState, torch.Tensor, torch.Tensor]:
         """Execute actions and return new state.
 
         Args:
@@ -490,7 +490,7 @@ class GPUPokerEnv:
         fresh_state = self.reset()
 
         # Merge: use fresh state where done, keep old where not done
-        def merge(old, new, dones):
+        def merge(old: torch.Tensor, new: torch.Tensor, dones: torch.Tensor) -> torch.Tensor:
             expand_shape = [-1] + [1] * (old.dim() - 1)
             mask = dones.view(*expand_shape).expand_as(old)
             return torch.where(mask, new, old)
