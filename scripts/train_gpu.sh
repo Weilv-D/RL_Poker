@@ -40,6 +40,11 @@ Options (key only):
     --history-window N     History window length (default: 16)
     --gru-hidden N         GRU hidden size (default: 128)
     --reveal-opponent-ranks  Debug: reveal opponents' ranks
+    --belief-no-behavior   Disable behavior-based belief updates
+    --belief-decay D       Belief decay (default: 0.98)
+    --belief-play-bonus B  Belief play bonus (default: 0.5)
+    --belief-pass-penalty P  Belief pass penalty (default: 0.3)
+    --belief-temp T        Belief temperature (default: 2.0)
     -h, --help             Show this help
 
 Examples:

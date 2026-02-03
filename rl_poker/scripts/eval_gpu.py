@@ -2,12 +2,14 @@
 """GPU evaluation for RL Poker policies.
 
 Runs vectorized games on GPU against a configurable opponent pool.
+Supports evaluating a single checkpoint or a directory of checkpoints.
 """
 
 import argparse
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import List
+import json
 
 import numpy as np
 import torch
@@ -67,11 +69,16 @@ class EvalConfig:
     pool_seed: int = 42
     pool_use_random: bool = True
     pool_use_heuristic: bool = True
-    pool_heuristic_styles: str = "conservative,aggressive"
+    pool_heuristic_styles: str = "conservative,aggressive,rush,counter,variance"
     snapshot_dir: str | None = None
     snapshot_glob: str = "*_step_*.pt"
     snapshot_max: int = 8
     elo_k: float = 32.0
+    belief_use_behavior: bool = True
+    belief_decay: float = 0.98
+    belief_play_bonus: float = 0.5
+    belief_pass_penalty: float = 0.3
+    belief_temp: float = 2.0
 
 
 def _parse_heuristic_styles(styles: str) -> List[str]:
@@ -87,50 +94,8 @@ def load_checkpoint(path: str, device: torch.device):
     return config, state_dict
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Evaluate RL Poker policy on GPU")
-    parser.add_argument("--checkpoint", type=str, required=True)
-    parser.add_argument("--episodes", type=int, default=100)
-    parser.add_argument("--num-envs", type=int, default=128)
-    parser.add_argument("--no-recurrent", action="store_true")
-    parser.add_argument("--history-window", type=int, default=16)
-    parser.add_argument("--reveal-opponent-ranks", action="store_true")
-    parser.add_argument("--hidden-size", type=int, default=256)
-    parser.add_argument("--gru-hidden", type=int, default=128)
-    parser.add_argument("--pool-max-size", type=int, default=16)
-    parser.add_argument("--pool-seed", type=int, default=42)
-    parser.add_argument("--pool-no-random", action="store_true")
-    parser.add_argument("--pool-no-heuristic", action="store_true")
-    parser.add_argument("--pool-heuristic-styles", type=str, default="conservative,aggressive")
-    parser.add_argument("--snapshot-dir", type=str, default=None)
-    parser.add_argument("--snapshot-glob", type=str, default="*_step_*.pt")
-    parser.add_argument("--snapshot-max", type=int, default=8)
-    parser.add_argument("--elo-k", type=float, default=32.0)
-    parser.add_argument("--no-cuda", action="store_true")
-
-    args = parser.parse_args()
-
-    device = torch.device("cuda" if (not args.no_cuda and torch.cuda.is_available()) else "cpu")
-    cfg = EvalConfig(
-        episodes=args.episodes,
-        num_envs=args.num_envs,
-        use_recurrent=not args.no_recurrent,
-        history_window=args.history_window,
-        reveal_opponent_ranks=args.reveal_opponent_ranks,
-        hidden_size=args.hidden_size,
-        gru_hidden=args.gru_hidden,
-        pool_max_size=args.pool_max_size,
-        pool_seed=args.pool_seed,
-        pool_use_random=not args.pool_no_random,
-        pool_use_heuristic=not args.pool_no_heuristic,
-        pool_heuristic_styles=args.pool_heuristic_styles,
-        snapshot_dir=args.snapshot_dir,
-        snapshot_glob=args.snapshot_glob,
-        snapshot_max=args.snapshot_max,
-        elo_k=args.elo_k,
-    )
-
-    ckpt_config, state_dict = load_checkpoint(args.checkpoint, device)
+def evaluate_checkpoint(path: str, cfg: EvalConfig, device: torch.device) -> dict:
+    ckpt_config, state_dict = load_checkpoint(path, device)
     if ckpt_config is not None:
         cfg.use_recurrent = getattr(ckpt_config, "use_recurrent", cfg.use_recurrent)
         cfg.history_window = getattr(ckpt_config, "history_window", cfg.history_window)
@@ -151,6 +116,10 @@ def main():
     history_buffer = HistoryBuffer(cfg.num_envs, history_cfg, device)
 
     public_played_counts = torch.zeros(cfg.num_envs, 13, device=device, dtype=torch.float32)
+    opp_rank_logits = torch.zeros(cfg.num_envs, 4, 13, device=device, dtype=torch.float32)
+    rank_positions = torch.arange(13, device=device)
+    rank_dist = torch.abs(rank_positions.unsqueeze(0) - rank_positions.unsqueeze(1)).float()
+    rank_affinity = torch.exp(-rank_dist / max(cfg.belief_temp, 1e-6))
 
     def build_history_features(actions: torch.Tensor, players: torch.Tensor) -> torch.Tensor:
         action_types = env.mask_computer.action_types[actions]
@@ -184,8 +153,12 @@ def main():
             other_p = (p_idx + offset) % 4
             other_cards = state.cards_remaining.gather(1, other_p.view(B, 1)).squeeze(1)
             other_remaining.append(other_cards.float())
-            frac = (other_cards.float() / total_unknown).unsqueeze(1)
-            beliefs.append(remaining_rank_counts * frac)
+            logits = opp_rank_logits[torch.arange(B, device=device), other_p]
+            weights = torch.softmax(logits, dim=1)
+            weighted = remaining_rank_counts * weights
+            norm = weighted.sum(dim=1).clamp(min=1.0)
+            belief = weighted * (other_cards.float() / norm).unsqueeze(1)
+            beliefs.append(belief)
 
         belief = torch.cat(beliefs, dim=1) / 4.0
         other_remaining = torch.stack(other_remaining, dim=1) / 13.0
@@ -225,17 +198,20 @@ def main():
         pool.add_fixed("random", GPURandomPolicy(seed=cfg.pool_seed), protected=True)
     if cfg.pool_use_heuristic:
         for style in _parse_heuristic_styles(cfg.pool_heuristic_styles):
+            noise = 0.3 if style == "variance" else 0.0
             pool.add_fixed(
-                f"heuristic_{style}", GPUHeuristicPolicy(env.mask_computer, style=style), protected=True
+                f"heuristic_{style}",
+                GPUHeuristicPolicy(env.mask_computer, style=style, noise_scale=noise),
+                protected=True,
             )
 
     if cfg.snapshot_dir:
         snapshot_paths = sorted(Path(cfg.snapshot_dir).glob(cfg.snapshot_glob))
         if cfg.snapshot_max > 0:
             snapshot_paths = snapshot_paths[-cfg.snapshot_max :]
-        for path in snapshot_paths:
-            ckpt = torch.load(path, map_location=device)
-            pool.add_snapshot(path.stem, ckpt["network"], added_step=ckpt.get("step", 0))
+        for snap_path in snapshot_paths:
+            ckpt = torch.load(snap_path, map_location=device)
+            pool.add_snapshot(snap_path.stem, ckpt["network"], added_step=ckpt.get("step", 0))
 
     if not pool.entries:
         raise ValueError("Opponent pool is empty. Enable random/heuristic or snapshot dir.")
@@ -295,6 +271,25 @@ def main():
             if played.any():
                 action_counts = env.mask_computer.action_required_counts[actions]
                 public_played_counts[played] += action_counts[played].float()
+                if cfg.belief_use_behavior:
+                    players = state.current_player
+                    opp_rank_logits[played, players[played]] *= cfg.belief_decay
+                    ranks_played = env.mask_computer.action_ranks[actions].clamp(min=0)
+                    opp_rank_logits[played, players[played]] += (
+                        cfg.belief_play_bonus * rank_affinity[ranks_played[played]]
+                    )
+
+            passed = actions == 0
+            if passed.any() and cfg.belief_use_behavior:
+                players = state.current_player
+                prev_rank = state.prev_action_rank
+                valid = prev_rank >= 0
+                if valid.any():
+                    envs = passed & valid
+                    if envs.any():
+                        ranks_pass = prev_rank[envs]
+                        mask = rank_positions.unsqueeze(0) > ranks_pass.unsqueeze(1)
+                        opp_rank_logits[envs, players[envs]] -= cfg.belief_pass_penalty * mask.float()
 
             if history_cfg.enabled:
                 env_ids = torch.arange(cfg.num_envs, device=device)
@@ -310,6 +305,7 @@ def main():
                     elo_ratings = update_elo_ratings(elo_ratings, r, k_factor=cfg.elo_k)
                 episodes_done += len(done_idx)
                 public_played_counts[done_idx] = 0.0
+                opp_rank_logits[done_idx] = 0.0
                 if history_cfg.enabled:
                     history_buffer.reset_envs(done_idx)
                 state = env.reset_done_envs(new_state, dones)
@@ -322,12 +318,102 @@ def main():
     win_rate = np.mean(ranks <= 2) * 100 if ranks.size > 0 else 0.0
     avg_rank = np.mean(ranks) if ranks.size > 0 else 0.0
 
-    print("\nEvaluation results")
-    print(f"Episodes: {cfg.episodes}")
-    print(f"Mean score: {scores.mean():.3f}")
-    print(f"Win rate (top2): {win_rate:.1f}%")
-    print(f"Average rank: {avg_rank:.2f}")
-    print(f"Elo (seat0/1/2/3): {[round(r, 1) for r in elo_ratings]}")
+    return {
+        "checkpoint": str(path),
+        "episodes": cfg.episodes,
+        "mean_score": float(scores.mean()) if scores.size > 0 else 0.0,
+        "win_rate": float(win_rate),
+        "avg_rank": float(avg_rank),
+        "elo": [round(r, 1) for r in elo_ratings],
+    }
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Evaluate RL Poker policy on GPU")
+    parser.add_argument("--checkpoint", type=str, default=None)
+    parser.add_argument("--checkpoint-dir", type=str, default=None)
+    parser.add_argument("--checkpoint-glob", type=str, default="*_step_*.pt")
+    parser.add_argument("--output-json", type=str, default=None)
+    parser.add_argument("--episodes", type=int, default=100)
+    parser.add_argument("--num-envs", type=int, default=128)
+    parser.add_argument("--no-recurrent", action="store_true")
+    parser.add_argument("--history-window", type=int, default=16)
+    parser.add_argument("--reveal-opponent-ranks", action="store_true")
+    parser.add_argument("--hidden-size", type=int, default=256)
+    parser.add_argument("--gru-hidden", type=int, default=128)
+    parser.add_argument("--pool-max-size", type=int, default=16)
+    parser.add_argument("--pool-seed", type=int, default=42)
+    parser.add_argument("--pool-no-random", action="store_true")
+    parser.add_argument("--pool-no-heuristic", action="store_true")
+    parser.add_argument("--pool-heuristic-styles", type=str, default="conservative,aggressive,rush,counter,variance")
+    parser.add_argument("--snapshot-dir", type=str, default=None)
+    parser.add_argument("--snapshot-glob", type=str, default="*_step_*.pt")
+    parser.add_argument("--snapshot-max", type=int, default=8)
+    parser.add_argument("--elo-k", type=float, default=32.0)
+    parser.add_argument("--belief-no-behavior", action="store_true")
+    parser.add_argument("--belief-decay", type=float, default=0.98)
+    parser.add_argument("--belief-play-bonus", type=float, default=0.5)
+    parser.add_argument("--belief-pass-penalty", type=float, default=0.3)
+    parser.add_argument("--belief-temp", type=float, default=2.0)
+    parser.add_argument("--no-cuda", action="store_true")
+
+    args = parser.parse_args()
+
+    if args.checkpoint is None and args.checkpoint_dir is None:
+        raise SystemExit("Provide --checkpoint or --checkpoint-dir")
+
+    device = torch.device("cuda" if (not args.no_cuda and torch.cuda.is_available()) else "cpu")
+    cfg = EvalConfig(
+        episodes=args.episodes,
+        num_envs=args.num_envs,
+        use_recurrent=not args.no_recurrent,
+        history_window=args.history_window,
+        reveal_opponent_ranks=args.reveal_opponent_ranks,
+        hidden_size=args.hidden_size,
+        gru_hidden=args.gru_hidden,
+        pool_max_size=args.pool_max_size,
+        pool_seed=args.pool_seed,
+        pool_use_random=not args.pool_no_random,
+        pool_use_heuristic=not args.pool_no_heuristic,
+        pool_heuristic_styles=args.pool_heuristic_styles,
+        snapshot_dir=args.snapshot_dir,
+        snapshot_glob=args.snapshot_glob,
+        snapshot_max=args.snapshot_max,
+        elo_k=args.elo_k,
+        belief_use_behavior=not args.belief_no_behavior,
+        belief_decay=args.belief_decay,
+        belief_play_bonus=args.belief_play_bonus,
+        belief_pass_penalty=args.belief_pass_penalty,
+        belief_temp=args.belief_temp,
+    )
+
+    results = []
+    if args.checkpoint:
+        results.append(evaluate_checkpoint(args.checkpoint, cfg, device))
+    else:
+        ckpts = sorted(Path(args.checkpoint_dir).glob(args.checkpoint_glob))
+        for path in ckpts:
+            results.append(evaluate_checkpoint(str(path), cfg, device))
+
+    if args.output_json:
+        output_path = Path(args.output_json)
+    elif args.checkpoint_dir:
+        output_path = Path(args.checkpoint_dir) / "eval_results.json"
+    else:
+        output_path = None
+
+    if output_path:
+        output_path.write_text(json.dumps(results, indent=2))
+        print(f"Saved eval results to {output_path}")
+
+    for res in results:
+        print("\nEvaluation results")
+        print(f"Checkpoint: {res['checkpoint']}")
+        print(f"Episodes: {res['episodes']}")
+        print(f"Mean score: {res['mean_score']:.3f}")
+        print(f"Win rate (top2): {res['win_rate']:.1f}%")
+        print(f"Average rank: {res['avg_rank']:.2f}")
+        print(f"Elo (seat0/1/2/3): {res['elo']}")
 
 
 if __name__ == "__main__":

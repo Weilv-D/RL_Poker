@@ -134,6 +134,11 @@ tensorboard --logdir runs
 --history-window N     历史序列窗口长度 (默认: 16)
 --gru-hidden N         GRU 隐状态大小 (默认: 128)
 --reveal-opponent-ranks  调试用：泄露对手真实点数 (默认关闭)
+--belief-no-behavior   关闭基于行为的信念更新
+--belief-decay D       信念衰减 (默认: 0.98)
+--belief-play-bonus B  出牌信念增益 (默认: 0.5)
+--belief-pass-penalty P  PASS 信念惩罚 (默认: 0.3)
+--belief-temp T        信念温度 (默认: 2.0)
 --seed N               随机种子 (默认: 42)
 --checkpoint-dir DIR   检查点目录 (默认: checkpoints)
 --log-dir DIR          日志目录 (默认: runs)
@@ -146,7 +151,7 @@ tensorboard --logdir runs
 - 对手池由随机对手、GPU 启发式对手、历史快照构成
 - PSRO-lite 采样权重偏向“当前能压制你的对手”
 - 训练中定期加入策略快照，形成动态对抗分布
-- 观测默认不泄露对手手牌，通过历史序列与信念建模引导推理
+- 观测默认不泄露对手手牌，通过历史序列与**行为后验信念**建模引导推理
 
 ## 对抗性塑形奖励
 
@@ -159,7 +164,7 @@ tensorboard --logdir runs
 - `rl_poker/rl/history.py` 提供历史序列缓存接口
 - `rl_poker/rl/recurrent.py` 提供 GRU 版策略网络
 - 训练默认启用 GRU + 历史序列；可通过 `--no-recurrent` 关闭
-- 信念特征由公开出牌序列构建（不使用对手真实手牌）
+- 信念特征由公开出牌序列构建（不使用对手真实手牌），并基于对手行为做轻量后验更新
 
 ## 评估（基于 AEC 完整规则）
 
@@ -226,6 +231,16 @@ python -m rl_poker.scripts.train --total-timesteps 2000000
 
 # 3) 评估（GPU 一致环境）
 python -m rl_poker.scripts.eval_gpu --checkpoint checkpoints/xxx.pt --episodes 200
+```
+
+### 多 checkpoint 评估与自动筛选
+
+```bash
+# 评估目录内所有 checkpoint（输出 eval_results.json）
+python -m rl_poker.scripts.eval_gpu --checkpoint-dir checkpoints --episodes 100
+
+# 选择 Top-K 并删除其余（基于 eval_gpu 输出）
+python scripts/select_checkpoints.py --eval-json checkpoints/eval_results.json --keep 5 --metric mean_score --delete
 ```
 
 ## License

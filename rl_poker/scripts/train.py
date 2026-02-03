@@ -79,7 +79,7 @@ class TrainConfig:
     pool_seed: int = 42
     pool_use_random: bool = True
     pool_use_heuristic: bool = True
-    pool_heuristic_styles: str = "conservative,aggressive"
+    pool_heuristic_styles: str = "conservative,aggressive,rush,counter,variance"
     # Shaping reward
     shaping_alpha: float = 0.1
     shaping_anneal_updates: int = 200
@@ -88,6 +88,11 @@ class TrainConfig:
     history_window: int = 16
     reveal_opponent_ranks: bool = False
     gru_hidden: int = 128
+    belief_use_behavior: bool = True
+    belief_decay: float = 0.98
+    belief_play_bonus: float = 0.5
+    belief_pass_penalty: float = 0.3
+    belief_temp: float = 2.0
 
     # Logging
     log_interval: int = 5
@@ -143,6 +148,10 @@ def train(config: TrainConfig):
 
     # Public played counts for belief features
     public_played_counts = torch.zeros(config.num_envs, 13, device=device, dtype=torch.float32)
+    opp_rank_logits = torch.zeros(config.num_envs, 4, 13, device=device, dtype=torch.float32)
+    rank_positions = torch.arange(13, device=device)
+    rank_dist = torch.abs(rank_positions.unsqueeze(0) - rank_positions.unsqueeze(1)).float()
+    rank_affinity = torch.exp(-rank_dist / max(config.belief_temp, 1e-6))
 
     def build_history_features(actions: torch.Tensor, players: torch.Tensor) -> torch.Tensor:
         action_types = env.mask_computer.action_types[actions]
@@ -176,8 +185,12 @@ def train(config: TrainConfig):
             other_p = (p_idx + offset) % 4
             other_cards = state.cards_remaining.gather(1, other_p.view(B, 1)).squeeze(1)
             other_remaining.append(other_cards.float())
-            frac = (other_cards.float() / total_unknown).unsqueeze(1)
-            beliefs.append(remaining_rank_counts * frac)
+            logits = opp_rank_logits[torch.arange(B, device=device), other_p]
+            weights = torch.softmax(logits, dim=1)
+            weighted = remaining_rank_counts * weights
+            norm = weighted.sum(dim=1).clamp(min=1.0)
+            belief = weighted * (other_cards.float() / norm).unsqueeze(1)
+            beliefs.append(belief)
 
         belief = torch.cat(beliefs, dim=1) / 4.0
         other_remaining = torch.stack(other_remaining, dim=1) / 13.0
@@ -221,9 +234,10 @@ def train(config: TrainConfig):
 
     if config.pool_use_heuristic:
         for style in _parse_heuristic_styles(config.pool_heuristic_styles):
+            noise = 0.3 if style == "variance" else 0.0
             pool.add_fixed(
                 f"heuristic_{style}",
-                GPUHeuristicPolicy(env.mask_computer, style=style),
+                GPUHeuristicPolicy(env.mask_computer, style=style, noise_scale=noise),
                 protected=True,
             )
 
@@ -424,17 +438,38 @@ def train(config: TrainConfig):
                 new_state, rewards, dones = env.step(state, actions, active_mask=pending)
                 total_steps += int(pending.sum().item())
 
-                # Update public played counts and history
+                # Update public played counts, belief logits, and history
                 played = (actions != 0) & pending
                 if played.any():
                     action_counts = env.mask_computer.action_required_counts[actions]
                     public_played_counts[played] += action_counts[played].float()
+                    if config.belief_use_behavior:
+                        players = state.current_player
+                        opp_rank_logits[played, players[played]] *= config.belief_decay
+                        ranks = env.mask_computer.action_ranks[actions].clamp(min=0)
+                        opp_rank_logits[played, players[played]] += (
+                            config.belief_play_bonus * rank_affinity[ranks[played]]
+                        )
 
                 if history_config.enabled:
                     env_ids = pending.nonzero(as_tuple=False).squeeze(-1)
                     if env_ids.numel() > 0:
                         feats = build_history_features(actions[env_ids], state.current_player[env_ids])
                         history_buffer.push(feats, env_ids=env_ids)
+
+                passed = (actions == 0) & pending
+                if passed.any() and config.belief_use_behavior:
+                    players = state.current_player
+                    prev_rank = state.prev_action_rank
+                    valid = prev_rank >= 0
+                    if valid.any():
+                        envs = passed & valid
+                        if envs.any():
+                            ranks = prev_rank[envs]
+                            mask = rank_positions.unsqueeze(0) > ranks.unsqueeze(1)
+                            opp_rank_logits[envs, players[envs]] -= (
+                                config.belief_pass_penalty * mask.float()
+                            )
 
                 if learner_envs.any():
                     step_obs[idx] = obs[idx]
@@ -474,6 +509,7 @@ def train(config: TrainConfig):
                 if dones.any():
                     done_idx = dones.nonzero().squeeze(-1)
                     public_played_counts[done_idx] = 0.0
+                    opp_rank_logits[done_idx] = 0.0
                     if history_config.enabled:
                         history_buffer.reset_envs(done_idx)
                     state = env.reset_done_envs(new_state, dones)
@@ -522,6 +558,27 @@ def train(config: TrainConfig):
                 if played.any():
                     action_counts = env.mask_computer.action_required_counts[actions]
                     public_played_counts[played] += action_counts[played].float()
+                    if config.belief_use_behavior:
+                        players = state.current_player
+                        opp_rank_logits[played, players[played]] *= config.belief_decay
+                        ranks = env.mask_computer.action_ranks[actions].clamp(min=0)
+                        opp_rank_logits[played, players[played]] += (
+                            config.belief_play_bonus * rank_affinity[ranks[played]]
+                        )
+
+                passed = (actions == 0) & opponent_active
+                if passed.any() and config.belief_use_behavior:
+                    players = state.current_player
+                    prev_rank = state.prev_action_rank
+                    valid = prev_rank >= 0
+                    if valid.any():
+                        envs = passed & valid
+                        if envs.any():
+                            ranks = prev_rank[envs]
+                            mask = rank_positions.unsqueeze(0) > ranks.unsqueeze(1)
+                            opp_rank_logits[envs, players[envs]] -= (
+                                config.belief_pass_penalty * mask.float()
+                            )
 
                 if history_config.enabled:
                     env_ids = opponent_active.nonzero(as_tuple=False).squeeze(-1)
@@ -550,6 +607,7 @@ def train(config: TrainConfig):
 
                 if dones.any():
                     public_played_counts[done_idx] = 0.0
+                    opp_rank_logits[done_idx] = 0.0
                     if history_config.enabled:
                         history_buffer.reset_envs(done_idx)
                     state = env.reset_done_envs(new_state, dones)
@@ -750,6 +808,11 @@ def main():
     parser.add_argument("--history-window", type=int, default=16)
     parser.add_argument("--reveal-opponent-ranks", action="store_true")
     parser.add_argument("--gru-hidden", type=int, default=128)
+    parser.add_argument("--belief-no-behavior", action="store_true")
+    parser.add_argument("--belief-decay", type=float, default=0.98)
+    parser.add_argument("--belief-play-bonus", type=float, default=0.5)
+    parser.add_argument("--belief-pass-penalty", type=float, default=0.3)
+    parser.add_argument("--belief-temp", type=float, default=2.0)
 
     # Logging
     parser.add_argument("--log-interval", type=int, default=5)
@@ -792,6 +855,11 @@ def main():
         history_window=args.history_window,
         reveal_opponent_ranks=args.reveal_opponent_ranks,
         gru_hidden=args.gru_hidden,
+        belief_use_behavior=not args.belief_no_behavior,
+        belief_decay=args.belief_decay,
+        belief_play_bonus=args.belief_play_bonus,
+        belief_pass_penalty=args.belief_pass_penalty,
+        belief_temp=args.belief_temp,
         log_interval=args.log_interval,
         save_interval=args.save_interval,
         checkpoint_dir=args.checkpoint_dir,

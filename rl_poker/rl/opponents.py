@@ -84,6 +84,9 @@ class GPUHeuristicPolicy:
     Styles:
         - "conservative": prefer shorter, lower-rank plays
         - "aggressive": prefer longer, higher-rank plays
+        - "rush": strongly prefer longer plays
+        - "counter": prefer higher rank but shorter length
+        - "variance": add noise for stochasticity
     """
 
     def __init__(
@@ -92,14 +95,16 @@ class GPUHeuristicPolicy:
         style: str = "conservative",
         pass_penalty: float = 1000.0,
         exemption_penalty: float = 1.0,
+        noise_scale: float = 0.0,
     ):
-        if style not in {"conservative", "aggressive"}:
+        if style not in {"conservative", "aggressive", "rush", "counter", "variance"}:
             raise ValueError(f"Unknown style: {style}")
 
         self.mask_computer = mask_computer
         self.style = style
         self.pass_penalty = pass_penalty
         self.exemption_penalty = exemption_penalty
+        self.noise_scale = noise_scale
         self._base_scores = self._build_base_scores()
 
     def _build_base_scores(self) -> torch.Tensor:
@@ -107,9 +112,18 @@ class GPUHeuristicPolicy:
         ranks = self.mask_computer.action_ranks.float().clamp(min=0)
         exemptions = self.mask_computer.action_is_exemption.float()
 
-        base = lengths * 10.0 + ranks + exemptions * self.exemption_penalty
-        if self.style == "aggressive":
-            base = -base
+        if self.style == "conservative":
+            base = lengths * 10.0 + ranks + exemptions * self.exemption_penalty
+        elif self.style == "aggressive":
+            base = -(lengths * 10.0 + ranks + exemptions * self.exemption_penalty)
+        elif self.style == "rush":
+            base = lengths * 20.0 + ranks * 0.5 + exemptions * self.exemption_penalty
+        elif self.style == "counter":
+            base = lengths * 8.0 - ranks * 2.0 + exemptions * self.exemption_penalty
+        elif self.style == "variance":
+            base = lengths * 10.0 + ranks + exemptions * self.exemption_penalty
+        else:
+            base = lengths * 10.0 + ranks + exemptions * self.exemption_penalty
 
         # PASS score handled per-batch
         base[self.mask_computer.pass_idx] = 0.0
@@ -120,6 +134,9 @@ class GPUHeuristicPolicy:
     ) -> torch.Tensor:
         # Expand base scores to batch
         scores = self._base_scores.unsqueeze(0).expand(action_mask.shape[0], -1).clone()
+        if self.style == "variance" and self.noise_scale > 0:
+            noise = torch.randn_like(scores) * self.noise_scale
+            scores = scores + noise
 
         # Mask illegal actions
         scores = scores.masked_fill(~action_mask, float("inf"))
