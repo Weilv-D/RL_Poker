@@ -442,6 +442,9 @@ class GPUPokerEnv:
         new_current = torch.where(all_others_passed & ~lead_active, first_active, new_current)
         new_lead_player = torch.where(all_others_passed & ~lead_active, first_active, new_lead_player)
 
+        # If game is over, keep current player at the last actor (matches CPU engine)
+        new_current = torch.where(game_over, current_player, new_current)
+
         # If inactive, keep current player unchanged
         if active_mask is not None:
             new_current = torch.where(env_active, new_current, current_player)

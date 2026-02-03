@@ -4,7 +4,17 @@
 set -euo pipefail
 
 # Defaults
-PYTHON="${PYTHON:-/home/weilv/workspace/prjforfun/RL_poker/.venv/bin/python}"
+# Prefer the active virtualenv if available; otherwise fall back to `python`.
+# Local override example (do not commit hard-coded paths):
+# PYTHON="/home/yourname/path/to/.venv/bin/python"
+PYTHON="${PYTHON:-}"
+if [[ -z "$PYTHON" ]]; then
+    if [[ -n "${VIRTUAL_ENV:-}" && -x "${VIRTUAL_ENV}/bin/python" ]]; then
+        PYTHON="${VIRTUAL_ENV}/bin/python"
+    else
+        PYTHON="python"
+    fi
+fi
 NUM_ENVS="${NUM_ENVS:-128}"
 TOTAL_TIMESTEPS="${TOTAL_TIMESTEPS:-2000000}"
 ROLLOUT_STEPS="${ROLLOUT_STEPS:-128}"
