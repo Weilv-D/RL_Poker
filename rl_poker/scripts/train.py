@@ -153,6 +153,7 @@ def train(config: TrainConfig):
     public_played_counts = torch.zeros(config.num_envs, 13, device=device, dtype=torch.float32)
     opp_rank_logits = torch.zeros(config.num_envs, 4, 13, device=device, dtype=torch.float32)
     batch_idx = torch.arange(config.num_envs, device=device)
+    other_offsets = torch.tensor([1, 2, 3], device=device)
     rank_positions = torch.arange(13, device=device)
     rank_dist = torch.abs(rank_positions.unsqueeze(0) - rank_positions.unsqueeze(1)).float()
     rank_affinity = torch.exp(-rank_dist / max(config.belief_temp, 1e-6))
@@ -191,21 +192,16 @@ def train(config: TrainConfig):
         ).squeeze(1)
         remaining_rank_counts = (4.0 - my_rank_counts.float() - public_played_counts).clamp(min=0)
 
-        belief_list: list[torch.Tensor] = []
-        other_remaining_list: list[torch.Tensor] = []
-        for offset in [1, 2, 3]:
-            other_p = (p_idx + offset) % 4
-            other_cards = state.cards_remaining.gather(1, other_p.view(B, 1)).squeeze(1)
-            other_remaining_list.append(other_cards.float())
-            logits = opp_rank_logits[batch_idx[:B], other_p]
-            weights = torch.softmax(logits, dim=1)
-            weighted = remaining_rank_counts * weights
-            norm = weighted.sum(dim=1).clamp(min=1.0)
-            belief = weighted * (other_cards.float() / norm).unsqueeze(1)
-            belief_list.append(belief)
+        other_p = (p_idx.view(B, 1) + other_offsets.view(1, 3)) % 4  # [B, 3]
+        other_cards = state.cards_remaining.gather(1, other_p)  # [B, 3]
+        logits = opp_rank_logits.gather(1, other_p.unsqueeze(-1).expand(-1, -1, 13))  # [B, 3, 13]
+        weights = torch.softmax(logits, dim=2)
+        weighted = remaining_rank_counts.unsqueeze(1) * weights  # [B, 3, 13]
+        norm = weighted.sum(dim=2).clamp(min=1.0)
+        belief = weighted * (other_cards.float() / norm).unsqueeze(-1)  # [B, 3, 13]
 
-        belief = torch.cat(belief_list, dim=1) / 4.0
-        other_remaining = torch.stack(other_remaining_list, dim=1) / 13.0
+        belief = belief.reshape(B, -1) / 4.0
+        other_remaining = other_cards.float() / 13.0
         played_norm = public_played_counts / 4.0
 
         return torch.cat([obs, belief, other_remaining, played_norm], dim=1)
