@@ -75,6 +75,9 @@ class TrainConfig:
     pool_use_random: bool = True
     pool_use_heuristic: bool = True
     pool_heuristic_styles: str = "conservative,aggressive"
+    # Shaping reward
+    shaping_alpha: float = 0.1
+    shaping_anneal_updates: int = 200
 
     # Logging
     log_interval: int = 5
@@ -168,10 +171,34 @@ def train(config: TrainConfig):
     print(f"\nTraining for {num_updates} updates...")
     print(f"Batch size: {batch_size}, Minibatch size: {minibatch_size}")
 
+    def shaping_alpha(update_idx: int) -> float:
+        if config.shaping_alpha <= 0 or config.shaping_anneal_updates <= 0:
+            return 0.0
+        progress = min(update_idx / config.shaping_anneal_updates, 1.0)
+        return config.shaping_alpha * (1.0 - progress)
+
+    def compute_shaping_bonus(
+        opp_ids: np.ndarray, learner_scores: np.ndarray, opponent_scores: np.ndarray, alpha: float
+    ) -> np.ndarray:
+        if alpha <= 0:
+            return np.zeros_like(learner_scores)
+
+        bonuses = np.zeros_like(learner_scores, dtype=np.float32)
+        for env_idx in range(opp_ids.shape[0]):
+            opp_ev = []
+            for seat_idx in range(opp_ids.shape[1]):
+                entry = pool.entries[int(opp_ids[env_idx, seat_idx])]
+                opp_ev.append(entry.stats.ev_ema)
+            baseline = float(np.mean(opp_ev)) if opp_ev else 0.0
+            bonuses[env_idx] = alpha * (learner_scores[env_idx] - baseline)
+        return bonuses
+
     def update_pool_and_assignments(
         rewards: torch.Tensor,
         dones: torch.Tensor,
         new_state,
+        last_step_idx_buf: np.ndarray,
+        rew_buf_ref: List[torch.Tensor],
     ) -> None:
         nonlocal total_games, total_wins, opponent_ids
 
@@ -193,6 +220,15 @@ def train(config: TrainConfig):
         learner_scores = rewards[done_idx, 0].detach().cpu().numpy()
         opp_scores = rewards[done_idx, 1:4].detach().cpu().numpy()
         pool.update_stats(opp_ids_done, learner_scores, opp_scores)
+
+        # Apply shaping reward to last learner step (before resampling opponents)
+        alpha = shaping_alpha(update)
+        if alpha > 0:
+            bonuses = compute_shaping_bonus(opp_ids_done, learner_scores, opp_scores, alpha)
+            for env_idx, bonus in zip(done_idx_cpu, bonuses):
+                last_idx = int(last_step_idx_buf[env_idx])
+                if 0 <= last_idx < len(rew_buf_ref):
+                    rew_buf_ref[last_idx][env_idx] += float(bonus)
 
         # Resample opponents for finished envs
         opponent_ids[done_idx_cpu] = pool.sample_opponents(len(done_idx_cpu), seats=3)
@@ -271,7 +307,7 @@ def train(config: TrainConfig):
                 new_state, rewards, dones = env.step(state, actions, active_mask=pending)
                 total_steps += int(pending.sum().item())
 
-                update_pool_and_assignments(rewards, dones, new_state)
+                update_pool_and_assignments(rewards, dones, new_state, last_step_idx, rew_buf)
 
                 if learner_envs.any():
                     step_obs[idx] = obs[idx]
@@ -333,7 +369,7 @@ def train(config: TrainConfig):
                 new_state, rewards, dones = env.step(state, actions, active_mask=opponent_active)
                 total_steps += int(opponent_active.sum().item())
 
-                update_pool_and_assignments(rewards, dones, new_state)
+                update_pool_and_assignments(rewards, dones, new_state, last_step_idx, rew_buf)
 
                 if dones.any():
                     done_idx = dones.nonzero().squeeze(-1)
@@ -524,6 +560,9 @@ def main():
     parser.add_argument("--pool-no-random", action="store_true")
     parser.add_argument("--pool-no-heuristic", action="store_true")
     parser.add_argument("--pool-heuristic-styles", type=str, default="conservative,aggressive")
+    # Shaping reward
+    parser.add_argument("--shaping-alpha", type=float, default=0.1)
+    parser.add_argument("--shaping-anneal-updates", type=int, default=200)
 
     # Logging
     parser.add_argument("--log-interval", type=int, default=5)
@@ -560,6 +599,8 @@ def main():
         pool_use_random=not args.pool_no_random,
         pool_use_heuristic=not args.pool_no_heuristic,
         pool_heuristic_styles=args.pool_heuristic_styles,
+        shaping_alpha=args.shaping_alpha,
+        shaping_anneal_updates=args.shaping_anneal_updates,
         log_interval=args.log_interval,
         save_interval=args.save_interval,
         checkpoint_dir=args.checkpoint_dir,
