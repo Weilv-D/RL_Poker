@@ -219,6 +219,49 @@ class OpponentPool:
     def add_snapshot(
         self, name: str, state_dict: dict[str, torch.Tensor], added_step: int = 0
     ) -> None:
+        entry = self._build_snapshot_entry(name, state_dict, added_step, initial_ev=None)
+        self.entries.append(entry)
+        self._prune_if_needed()
+
+    def add_snapshot_if_stronger(
+        self,
+        name: str,
+        state_dict: dict[str, torch.Tensor],
+        added_step: int = 0,
+        candidate_ev: float = 0.0,
+    ) -> bool:
+        """Add a snapshot only if it is stronger than the weakest non-protected opponent.
+
+        Stronger means lower EV (harder for the learner). If the pool is not full,
+        the snapshot is always added. Returns True if added or replaced.
+        """
+        entry = self._build_snapshot_entry(
+            name, state_dict, added_step, initial_ev=float(candidate_ev)
+        )
+
+        if len(self.entries) < self.max_size:
+            self.entries.append(entry)
+            return True
+
+        # Pool full: replace only if stronger than the weakest non-protected
+        candidates = [(idx, e) for idx, e in enumerate(self.entries) if not e.protected]
+        if not candidates:
+            return False
+
+        weakest_idx, weakest_entry = max(candidates, key=lambda item: item[1].stats.ev_ema)
+        if entry.stats.ev_ema >= weakest_entry.stats.ev_ema:
+            return False
+
+        self.entries[weakest_idx] = entry
+        return True
+
+    def _build_snapshot_entry(
+        self,
+        name: str,
+        state_dict: dict[str, torch.Tensor],
+        added_step: int,
+        initial_ev: float | None,
+    ) -> OpponentEntry:
         if self.recurrent:
             from rl_poker.rl.recurrent import RecurrentPolicyNetwork
 
@@ -238,15 +281,16 @@ class OpponentPool:
             network.load_state_dict(state_dict)
             policy = PolicyNetworkOpponent(network)
 
-        self.entries.append(
-            OpponentEntry(
-                name=name,
-                policy=policy,
-                protected=False,
-                added_step=added_step,
-            )
+        entry = OpponentEntry(
+            name=name,
+            policy=policy,
+            protected=False,
+            added_step=added_step,
         )
-        self._prune_if_needed()
+        if initial_ev is not None:
+            entry.stats.ev_ema = float(initial_ev)
+            entry.stats.games = 1
+        return entry
 
     def _prune_if_needed(self) -> None:
         if len(self.entries) <= self.max_size:

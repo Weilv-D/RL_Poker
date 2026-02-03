@@ -827,7 +827,9 @@ def train(config: TrainConfig):
 
         # Add snapshot to pool
         if config.pool_add_interval > 0 and update % config.pool_add_interval == 0:
-            pool.add_snapshot(f"snapshot_{total_steps}", network.state_dict(), added_step=total_steps)
+            pool.add_snapshot_if_stronger(
+                f"snapshot_{total_steps}", network.state_dict(), added_step=total_steps, candidate_ev=0.0
+            )
 
     # Final save
     final_path = os.path.join(config.checkpoint_dir, f"{run_name}_final.pt")

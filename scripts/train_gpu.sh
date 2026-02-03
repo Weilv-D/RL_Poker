@@ -112,7 +112,7 @@ while [[ $# -gt 0 ]]; do
                 --num-minibatches 64
                 --gru-hidden 128
                 --history-window 32
-                --pool-max-size 32
+                --pool-max-size 16
                 --pool-add-interval 5
                 --pool-psro-beta 5.0
                 --pool-min-prob 0.03
