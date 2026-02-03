@@ -12,6 +12,8 @@ from .opponents import (
     GPURandomPolicy,
     GPUHeuristicPolicy,
 )
+from .history import HistoryConfig, HistoryBuffer
+from .recurrent import RecurrentPolicyNetwork
 
 __all__ = [
     "GameState",
@@ -25,4 +27,7 @@ __all__ = [
     "PolicyNetworkOpponent",
     "GPURandomPolicy",
     "GPUHeuristicPolicy",
+    "HistoryConfig",
+    "HistoryBuffer",
+    "RecurrentPolicyNetwork",
 ]
