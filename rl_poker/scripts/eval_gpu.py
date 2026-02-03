@@ -8,7 +8,7 @@ Supports evaluating a single checkpoint or a directory of checkpoints.
 import argparse
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List
+from typing import cast
 import json
 
 import numpy as np
@@ -16,6 +16,7 @@ import torch
 import torch.nn.functional as F
 
 from rl_poker.rl import (
+    GameState,
     GPUPokerEnv,
     PolicyNetwork,
     RecurrentPolicyNetwork,
@@ -32,7 +33,7 @@ def calculate_expected_score(rating_a: float, rating_b: float) -> float:
     return 1.0 / (1.0 + 10 ** ((rating_b - rating_a) / 400))
 
 
-def update_elo_ratings(ratings: List[float], ranks: List[int], k_factor: float = 32) -> List[float]:
+def update_elo_ratings(ratings: list[float], ranks: list[int], k_factor: float = 32) -> list[float]:
     n_players = len(ratings)
     new_ratings = list(ratings)
     rank_map = {i: ranks[i] for i in range(n_players)}
@@ -82,20 +83,24 @@ class EvalConfig:
     belief_temp: float = 2.0
 
 
-def _parse_heuristic_styles(styles: str) -> List[str]:
+def _parse_heuristic_styles(styles: str) -> list[str]:
     if not styles:
         return []
     return [s.strip() for s in styles.split(",") if s.strip()]
 
 
-def load_checkpoint(path: str, device: torch.device):
+def load_checkpoint(path: str, device: torch.device) -> tuple[object | None, dict[str, torch.Tensor]]:
     ckpt = torch.load(path, map_location=device)
+    if not isinstance(ckpt, dict):
+        raise ValueError(f"Checkpoint at {path} is not a dict")
     config = ckpt.get("config", None)
-    state_dict = ckpt["network"]
-    return config, state_dict
+    state_dict = ckpt.get("network")
+    if not isinstance(state_dict, dict):
+        raise ValueError("Checkpoint missing 'network' state_dict")
+    return config, cast(dict[str, torch.Tensor], state_dict)
 
 
-def evaluate_checkpoint(path: str, cfg: EvalConfig, device: torch.device) -> dict:
+def evaluate_checkpoint(path: str, cfg: EvalConfig, device: torch.device) -> dict[str, object]:
     ckpt_config, state_dict = load_checkpoint(path, device)
     if ckpt_config is not None:
         cfg.use_recurrent = getattr(ckpt_config, "use_recurrent", cfg.use_recurrent)
@@ -141,7 +146,7 @@ def evaluate_checkpoint(path: str, cfg: EvalConfig, device: torch.device) -> dic
         )
         return torch.cat([player_onehot, type_onehot, scalars], dim=1)
 
-    def augment_obs(obs: torch.Tensor, state) -> torch.Tensor:
+    def augment_obs(obs: torch.Tensor, state: GameState) -> torch.Tensor:
         B = obs.shape[0]
         p_idx = state.current_player
         my_rank_counts = state.rank_counts.gather(
@@ -150,8 +155,8 @@ def evaluate_checkpoint(path: str, cfg: EvalConfig, device: torch.device) -> dic
         remaining_rank_counts = (4.0 - my_rank_counts.float() - public_played_counts).clamp(min=0)
         total_unknown = remaining_rank_counts.sum(dim=1).clamp(min=1.0)
 
-        beliefs = []
-        other_remaining = []
+        beliefs: list[torch.Tensor] = []
+        other_remaining: list[torch.Tensor] = []
         for offset in [1, 2, 3]:
             other_p = (p_idx + offset) % 4
             other_cards = state.cards_remaining.gather(1, other_p.view(B, 1)).squeeze(1)
@@ -179,8 +184,12 @@ def evaluate_checkpoint(path: str, cfg: EvalConfig, device: torch.device) -> dic
             hidden_size=cfg.hidden_size,
             gru_hidden=cfg.gru_hidden,
         ).to(device)
+        rec_net = cast(RecurrentPolicyNetwork, network)
+        policy_net: PolicyNetwork | None = None
     else:
         network = PolicyNetwork(augmented_obs_dim, env.num_actions, cfg.hidden_size).to(device)
+        policy_net = cast(PolicyNetwork, network)
+        rec_net = None
 
     network.load_state_dict(state_dict)
     network.eval()
@@ -241,10 +250,13 @@ def evaluate_checkpoint(path: str, cfg: EvalConfig, device: torch.device) -> dic
             if learner_envs.any():
                 idx = learner_envs.nonzero(as_tuple=False).squeeze(-1)
                 if cfg.use_recurrent:
+                    assert rec_net is not None
                     seq = history_buffer.get_sequence(idx)
-                    actions_l, _, _ = network.get_action(obs[idx], action_mask[idx], seq)
+                    assert seq is not None
+                    actions_l, _, _ = rec_net.get_action(obs[idx], action_mask[idx], seq)
                 else:
-                    actions_l, _, _ = network.get_action(obs[idx], action_mask[idx])
+                    assert policy_net is not None
+                    actions_l, _, _ = policy_net.get_action(obs[idx], action_mask[idx])
                 actions[idx] = actions_l
 
             opponent_envs = state.current_player != 0
@@ -264,6 +276,7 @@ def evaluate_checkpoint(path: str, cfg: EvalConfig, device: torch.device) -> dic
                         policy = pool.entries[int(opp_id)].policy
                         if cfg.use_recurrent:
                             seq = history_buffer.get_sequence(idx)
+                            assert seq is not None
                             actions[idx] = policy.select_actions(obs[idx], action_mask[idx], seq=seq)
                         else:
                             actions[idx] = policy.select_actions(obs[idx], action_mask[idx])

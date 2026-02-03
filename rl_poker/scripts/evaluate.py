@@ -17,17 +17,17 @@ Usage:
 
 import argparse
 from collections import defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Any, Union
-import numpy as np
-import sys
 import json
+import sys
+import numpy as np
 
 from rl_poker.engine.game_state import GameState, NUM_PLAYERS, RANK_SCORES
 from rl_poker.agents.random_agent import RandomAgent, create_random_agent
 from rl_poker.agents.heuristic_agent import HeuristicAgent, create_heuristic_agent
-from rl_poker.agents.policy_pool import PolicyPool, PooledPolicyAgent, create_policy_pool
+from rl_poker.agents.policy_pool import PolicyPool, PooledPolicyAgent, create_policy_pool, PolicyProtocol
 from rl_poker.moves.legal_moves import Move
 
 
@@ -51,10 +51,10 @@ def calculate_expected_score(rating_a: float, rating_b: float) -> float:
 
 
 def update_elo_ratings(
-    ratings: List[float],
-    ranks: Dict[int, int],
+    ratings: list[float],
+    ranks: dict[int, int],
     k_factor: float = DEFAULT_ELO_K,
-) -> List[float]:
+) -> list[float]:
     """Update Elo ratings after a 4-player game.
 
     Uses a pairwise comparison approach: each player is compared against
@@ -112,11 +112,11 @@ class EloTracker:
         k_factor: K-factor for Elo updates
     """
 
-    ratings: List[float] = field(default_factory=lambda: [DEFAULT_STARTING_ELO] * NUM_PLAYERS)
-    rating_history: List[List[float]] = field(default_factory=list)
+    ratings: list[float] = field(default_factory=lambda: [DEFAULT_STARTING_ELO] * NUM_PLAYERS)
+    rating_history: list[list[float]] = field(default_factory=list)
     k_factor: float = DEFAULT_ELO_K
 
-    def update(self, ranks: Dict[int, int]) -> List[float]:
+    def update(self, ranks: dict[int, int]) -> list[float]:
         """Update ratings after an episode.
 
         Args:
@@ -139,7 +139,7 @@ class EloTracker:
             return 0.0
         return self.ratings[position] - DEFAULT_STARTING_ELO
 
-    def summary(self, agent_names: List[str]) -> str:
+    def summary(self, agent_names: list[str]) -> str:
         """Generate Elo summary string."""
         lines = ["\nElo Ratings:"]
         for pos in range(NUM_PLAYERS):
@@ -181,16 +181,16 @@ class EvaluationStats:
     """
 
     total_episodes: int = 0
-    scores_by_position: Dict[int, List[int]] = field(default_factory=lambda: defaultdict(list))
-    ranks_by_position: Dict[int, List[int]] = field(default_factory=lambda: defaultdict(list))
-    wins_by_position: Dict[int, int] = field(default_factory=lambda: defaultdict(int))
-    elo_tracker: Optional[EloTracker] = None
+    scores_by_position: dict[int, list[int]] = field(default_factory=lambda: defaultdict(list))
+    ranks_by_position: dict[int, list[int]] = field(default_factory=lambda: defaultdict(list))
+    wins_by_position: dict[int, int] = field(default_factory=lambda: defaultdict(int))
+    elo_tracker: EloTracker | None = None
 
     def __post_init__(self):
         if self.elo_tracker is None:
             self.elo_tracker = EloTracker()
 
-    def record_episode(self, scores: Dict[int, int], ranks: Dict[int, int]) -> None:
+    def record_episode(self, scores: dict[int, int], ranks: dict[int, int]) -> None:
         """Record results from a single episode.
 
         Args:
@@ -223,7 +223,7 @@ class EvaluationStats:
             else 0.0
         )
 
-    def get_rank_distribution(self, position: int) -> Dict[int, float]:
+    def get_rank_distribution(self, position: int) -> dict[int, float]:
         """Get rank distribution for a position."""
         ranks = self.ranks_by_position[position]
         if not ranks:
@@ -237,7 +237,7 @@ class EvaluationStats:
             return DEFAULT_STARTING_ELO
         return self.elo_tracker.get_rating(position)
 
-    def summary(self, agent_names: List[str]) -> str:
+    def summary(self, agent_names: list[str]) -> str:
         """Generate summary string.
 
         Args:
@@ -265,8 +265,7 @@ class EvaluationStats:
             lines.append(f"  Average Score: {avg_score:+.2f}")
             lines.append(f"  Win Rate (Top 2): {win_rate:.1%}")
             lines.append(
-                f"  Rank Distribution: 1st={rank_dist[1]:.1%}, 2nd={rank_dist[2]:.1%}, "
-                f"3rd={rank_dist[3]:.1%}, 4th={rank_dist[4]:.1%}"
+                f"  Rank Distribution: 1st={rank_dist[1]:.1%}, 2nd={rank_dist[2]:.1%}, 3rd={rank_dist[3]:.1%}, 4th={rank_dist[4]:.1%}"
             )
             lines.append(f"  Elo Rating: {elo:.0f} ({elo_sign}{elo_change:.0f})")
 
@@ -276,11 +275,11 @@ class EvaluationStats:
 
 def create_agent(
     agent_type: str,
-    seed: Optional[int] = None,
+    seed: int | None = None,
     position: int = 0,
-    policy_pool: Optional[PolicyPool] = None,
-    checkpoint_name: Optional[str] = None,
-) -> Any:
+    policy_pool: PolicyPool | None = None,
+    checkpoint_name: str | None = None,
+) -> PolicyProtocol:
     """Create an agent of the specified type.
 
     Args:
@@ -325,10 +324,10 @@ def create_agent(
 
 
 def run_episode(
-    agents: List[Any],
-    seed: Optional[int] = None,
+    agents: list[PolicyProtocol],
+    seed: int | None = None,
     verbose: bool = False,
-) -> Tuple[Dict[int, int], Dict[int, int], int]:
+) -> tuple[dict[int, int], dict[int, int], int]:
     """Run a single evaluation episode.
 
     Args:
@@ -393,12 +392,12 @@ def run_episode(
 
 
 def evaluate(
-    opponents: List[str],
+    opponents: list[str],
     episodes: int = 10,
-    seed: Optional[int] = None,
+    seed: int | None = None,
     verbose: bool = False,
-    policy_pool_dir: Optional[Union[str, Path]] = None,
-    policy_loader: Optional[Any] = None,
+    policy_pool_dir: str | Path | None = None,
+    policy_loader: Callable[[Path], PolicyProtocol] | None = None,
 ) -> EvaluationStats:
     """Run evaluation episodes.
 
@@ -427,14 +426,12 @@ def evaluate(
     if needs_pool:
         if policy_pool_dir is None:
             raise ValueError(
-                "policy_pool_dir required when using 'policy_pool' opponent type. "
-                "Use --pool-dir to specify the checkpoint directory."
+                "policy_pool_dir required when using 'policy_pool' opponent type. Use --pool-dir to specify the checkpoint directory."
             )
         policy_pool = create_policy_pool(pool_dir=policy_pool_dir, loader=policy_loader)
         if len(policy_pool) == 0:
             print(
-                f"Warning: PolicyPool at '{policy_pool_dir}' is empty. "
-                "Falling back to random agent for policy_pool positions."
+                f"Warning: PolicyPool at '{policy_pool_dir}' is empty. Falling back to random agent for policy_pool positions."
             )
 
     # Create agents

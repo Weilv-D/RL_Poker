@@ -9,6 +9,7 @@ import torch
 
 from rl_poker.moves.gpu_action_mask import GPUActionMaskComputer
 from rl_poker.rl.policy import PolicyNetwork
+from rl_poker.rl.recurrent import RecurrentPolicyNetwork
 
 
 class OpponentPolicy(Protocol):
@@ -28,7 +29,7 @@ class PolicyNetworkOpponent:
     """Frozen policy wrapper for a PolicyNetwork snapshot."""
 
     def __init__(self, network: PolicyNetwork):
-        self.network = network
+        self.network: PolicyNetwork = network
         self.network.eval()
         for param in self.network.parameters():
             param.requires_grad = False
@@ -44,8 +45,8 @@ class PolicyNetworkOpponent:
 class RecurrentPolicyOpponent:
     """Frozen policy wrapper for a RecurrentPolicyNetwork snapshot."""
 
-    def __init__(self, network):
-        self.network = network
+    def __init__(self, network: RecurrentPolicyNetwork):
+        self.network: RecurrentPolicyNetwork = network
         self.network.eval()
         for param in self.network.parameters():
             param.requires_grad = False
@@ -64,7 +65,7 @@ class GPURandomPolicy:
     """Uniform random policy over legal actions (GPU)."""
 
     def __init__(self, seed: int | None = None):
-        self.rng = np.random.default_rng(seed)
+        self.rng: np.random.Generator = np.random.default_rng(seed)
 
     def select_actions(
         self, obs: torch.Tensor, action_mask: torch.Tensor, seq: torch.Tensor | None = None
@@ -101,12 +102,12 @@ class GPUHeuristicPolicy:
         if style not in {"conservative", "aggressive", "rush", "counter", "variance"}:
             raise ValueError(f"Unknown style: {style}")
 
-        self.mask_computer = mask_computer
-        self.style = style
-        self.pass_penalty = pass_penalty
-        self.exemption_penalty = exemption_penalty
-        self.noise_scale = noise_scale
-        self._base_scores = self._build_base_scores()
+        self.mask_computer: GPUActionMaskComputer = mask_computer
+        self.style: str = style
+        self.pass_penalty: float = pass_penalty
+        self.exemption_penalty: float = exemption_penalty
+        self.noise_scale: float = noise_scale
+        self._base_scores: torch.Tensor = self._build_base_scores()
 
     def _build_base_scores(self) -> torch.Tensor:
         lengths = self.mask_computer.action_lengths.float()
@@ -320,7 +321,6 @@ class OpponentPool:
         lines = ["OpponentPool:"]
         for idx, entry in enumerate(self.entries):
             lines.append(
-                f"  [{idx}] {entry.name}: ev_ema={entry.stats.ev_ema:.3f}, "
-                f"games={entry.stats.games}, protected={entry.protected}"
+                f"  [{idx}] {entry.name}: ev_ema={entry.stats.ev_ema:.3f}, games={entry.stats.games}, protected={entry.protected}"
             )
         return "\n".join(lines)
