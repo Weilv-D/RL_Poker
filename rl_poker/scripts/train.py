@@ -37,6 +37,7 @@ from rl_poker.rl import (
     HistoryConfig,
     HistoryBuffer,
     RecurrentPolicyNetwork,
+    build_response_rank_weights,
 )
 
 
@@ -152,6 +153,8 @@ def train(config: TrainConfig):
     rank_positions = torch.arange(13, device=device)
     rank_dist = torch.abs(rank_positions.unsqueeze(0) - rank_positions.unsqueeze(1)).float()
     rank_affinity = torch.exp(-rank_dist / max(config.belief_temp, 1e-6))
+    rank_affinity = rank_affinity / rank_affinity.sum(dim=1, keepdim=True).clamp(min=1e-6)
+    response_rank_weights = build_response_rank_weights(env.mask_computer)
 
     def build_history_features(actions: torch.Tensor, players: torch.Tensor) -> torch.Tensor:
         action_types = env.mask_computer.action_types[actions]
@@ -441,14 +444,14 @@ def train(config: TrainConfig):
                 # Update public played counts, belief logits, and history
                 played = (actions != 0) & pending
                 if played.any():
-                    action_counts = env.mask_computer.action_required_counts[actions]
-                    public_played_counts[played] += action_counts[played].float()
+                    action_counts = env.mask_computer.action_required_counts[actions].float()
+                    public_played_counts[played] += action_counts[played]
                     if config.belief_use_behavior:
                         players = state.current_player
                         opp_rank_logits[played, players[played]] *= config.belief_decay
-                        ranks = env.mask_computer.action_ranks[actions].clamp(min=0)
+                        evidence = action_counts[played] @ rank_affinity
                         opp_rank_logits[played, players[played]] += (
-                            config.belief_play_bonus * rank_affinity[ranks[played]]
+                            config.belief_play_bonus * evidence
                         )
 
                 if history_config.enabled:
@@ -465,10 +468,10 @@ def train(config: TrainConfig):
                     if valid.any():
                         envs = passed & valid
                         if envs.any():
-                            ranks = prev_rank[envs]
-                            mask = rank_positions.unsqueeze(0) > ranks.unsqueeze(1)
+                            prev_actions = state.prev_action[envs]
+                            penalty = response_rank_weights[prev_actions] @ rank_affinity
                             opp_rank_logits[envs, players[envs]] -= (
-                                config.belief_pass_penalty * mask.float()
+                                config.belief_pass_penalty * penalty
                             )
 
                 if learner_envs.any():
@@ -534,16 +537,16 @@ def train(config: TrainConfig):
             obs = augment_obs(obs, state)
 
             learner_envs = pending & (state.current_player == 0)
-                if learner_envs.any():
-                    idx = learner_envs.nonzero(as_tuple=False).squeeze(-1)
-                    with torch.no_grad():
-                        if config.use_recurrent:
-                            seq = history_buffer.get_sequence(idx)
-                            _, _, values = network.get_action(obs[idx], action_mask[idx], seq)
-                        else:
-                            _, _, values = network.get_action(obs[idx], action_mask[idx])
-                    last_value[idx] = values
-                    pending[idx] = False
+            if learner_envs.any():
+                idx = learner_envs.nonzero(as_tuple=False).squeeze(-1)
+                with torch.no_grad():
+                    if config.use_recurrent:
+                        seq = history_buffer.get_sequence(idx)
+                        _, _, values = network.get_action(obs[idx], action_mask[idx], seq)
+                    else:
+                        _, _, values = network.get_action(obs[idx], action_mask[idx])
+                last_value[idx] = values
+                pending[idx] = False
 
             opponent_active = pending & (state.current_player != 0)
             if opponent_active.any():
@@ -556,14 +559,14 @@ def train(config: TrainConfig):
 
                 played = (actions != 0) & opponent_active
                 if played.any():
-                    action_counts = env.mask_computer.action_required_counts[actions]
-                    public_played_counts[played] += action_counts[played].float()
+                    action_counts = env.mask_computer.action_required_counts[actions].float()
+                    public_played_counts[played] += action_counts[played]
                     if config.belief_use_behavior:
                         players = state.current_player
                         opp_rank_logits[played, players[played]] *= config.belief_decay
-                        ranks = env.mask_computer.action_ranks[actions].clamp(min=0)
+                        evidence = action_counts[played] @ rank_affinity
                         opp_rank_logits[played, players[played]] += (
-                            config.belief_play_bonus * rank_affinity[ranks[played]]
+                            config.belief_play_bonus * evidence
                         )
 
                 passed = (actions == 0) & opponent_active
@@ -574,10 +577,10 @@ def train(config: TrainConfig):
                     if valid.any():
                         envs = passed & valid
                         if envs.any():
-                            ranks = prev_rank[envs]
-                            mask = rank_positions.unsqueeze(0) > ranks.unsqueeze(1)
+                            prev_actions = state.prev_action[envs]
+                            penalty = response_rank_weights[prev_actions] @ rank_affinity
                             opp_rank_logits[envs, players[envs]] -= (
-                                config.belief_pass_penalty * mask.float()
+                                config.belief_pass_penalty * penalty
                             )
 
                 if history_config.enabled:

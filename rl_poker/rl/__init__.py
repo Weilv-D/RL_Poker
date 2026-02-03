@@ -15,6 +15,7 @@ from .opponents import (
 )
 from .history import HistoryConfig, HistoryBuffer
 from .recurrent import RecurrentPolicyNetwork
+from .belief import build_response_rank_weights
 
 __all__ = [
     "GameState",
@@ -32,4 +33,5 @@ __all__ = [
     "HistoryConfig",
     "HistoryBuffer",
     "RecurrentPolicyNetwork",
+    "build_response_rank_weights",
 ]

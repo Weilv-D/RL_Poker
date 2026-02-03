@@ -24,6 +24,7 @@ from rl_poker.rl import (
     GPUHeuristicPolicy,
     HistoryConfig,
     HistoryBuffer,
+    build_response_rank_weights,
 )
 
 
@@ -120,6 +121,8 @@ def evaluate_checkpoint(path: str, cfg: EvalConfig, device: torch.device) -> dic
     rank_positions = torch.arange(13, device=device)
     rank_dist = torch.abs(rank_positions.unsqueeze(0) - rank_positions.unsqueeze(1)).float()
     rank_affinity = torch.exp(-rank_dist / max(cfg.belief_temp, 1e-6))
+    rank_affinity = rank_affinity / rank_affinity.sum(dim=1, keepdim=True).clamp(min=1e-6)
+    response_rank_weights = build_response_rank_weights(env.mask_computer)
 
     def build_history_features(actions: torch.Tensor, players: torch.Tensor) -> torch.Tensor:
         action_types = env.mask_computer.action_types[actions]
@@ -269,14 +272,14 @@ def evaluate_checkpoint(path: str, cfg: EvalConfig, device: torch.device) -> dic
 
             played = actions != 0
             if played.any():
-                action_counts = env.mask_computer.action_required_counts[actions]
-                public_played_counts[played] += action_counts[played].float()
+                action_counts = env.mask_computer.action_required_counts[actions].float()
+                public_played_counts[played] += action_counts[played]
                 if cfg.belief_use_behavior:
                     players = state.current_player
                     opp_rank_logits[played, players[played]] *= cfg.belief_decay
-                    ranks_played = env.mask_computer.action_ranks[actions].clamp(min=0)
+                    evidence = action_counts[played] @ rank_affinity
                     opp_rank_logits[played, players[played]] += (
-                        cfg.belief_play_bonus * rank_affinity[ranks_played[played]]
+                        cfg.belief_play_bonus * evidence
                     )
 
             passed = actions == 0
@@ -287,9 +290,11 @@ def evaluate_checkpoint(path: str, cfg: EvalConfig, device: torch.device) -> dic
                 if valid.any():
                     envs = passed & valid
                     if envs.any():
-                        ranks_pass = prev_rank[envs]
-                        mask = rank_positions.unsqueeze(0) > ranks_pass.unsqueeze(1)
-                        opp_rank_logits[envs, players[envs]] -= cfg.belief_pass_penalty * mask.float()
+                        prev_actions = state.prev_action[envs]
+                        penalty = response_rank_weights[prev_actions] @ rank_affinity
+                        opp_rank_logits[envs, players[envs]] -= (
+                            cfg.belief_pass_penalty * penalty
+                        )
 
             if history_cfg.enabled:
                 env_ids = torch.arange(cfg.num_envs, device=device)
