@@ -25,6 +25,8 @@ CHECKPOINT_DIR="${CHECKPOINT_DIR:-checkpoints}"
 LOG_DIR="${LOG_DIR:-runs}"
 TB_HOST="${TB_HOST:-127.0.0.1}"
 TB_PORT="${TB_PORT:-6006}"
+QUALITY=0
+QUALITY_EXTRA_ARGS=()
 
 usage() {
     cat << 'EOF'
@@ -33,6 +35,7 @@ RL Poker GPU Training Script
 Usage: ./scripts/train_gpu.sh [options]
 
 Options (key only):
+    --quality              Quality-first preset for 8GB GPUs (override defaults)
     --num-envs N           Number of parallel environments (default: 128)
     --total-timesteps N    Total training timesteps (default: 2000000)
     --rollout-steps N      Steps per rollout (default: 128)
@@ -61,6 +64,9 @@ Examples:
   # Quick test (5 minutes)
   ./scripts/train_gpu.sh --total-timesteps 100000
 
+  # Quality-first (recommended)
+  ./scripts/train_gpu.sh --quality
+
   # Standard training (1 hour)
   ./scripts/train_gpu.sh --total-timesteps 10000000 --num-envs 256
 
@@ -79,6 +85,30 @@ EOF
 EXTRA_ARGS=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --quality)
+            QUALITY=1
+            NUM_ENVS="64"
+            TOTAL_TIMESTEPS="50000000"
+            ROLLOUT_STEPS="256"
+            HIDDEN_SIZE="256"
+            LEARNING_RATE="2.5e-4"
+            QUALITY_EXTRA_ARGS=(
+                --ppo-epochs 4
+                --num-minibatches 16
+                --gru-hidden 128
+                --history-window 32
+                --pool-max-size 32
+                --pool-add-interval 5
+                --pool-psro-beta 5.0
+                --pool-min-prob 0.03
+                --pool-heuristic-styles conservative,aggressive,rush,counter,variance
+                --shaping-alpha 0.1
+                --shaping-anneal-updates 500
+                --log-interval 5
+                --save-interval 50
+            )
+            shift
+            ;;
         --num-envs) NUM_ENVS="$2"; shift 2;;
         --total-timesteps) TOTAL_TIMESTEPS="$2"; shift 2;;
         --rollout-steps) ROLLOUT_STEPS="$2"; shift 2;;
@@ -139,6 +169,7 @@ start_tensorboard
     --seed "$SEED" \
     --checkpoint-dir "$CHECKPOINT_DIR" \
     --log-dir "$LOG_DIR" \
+    "${QUALITY_EXTRA_ARGS[@]}" \
     "${EXTRA_ARGS[@]}"
 
 echo ""
