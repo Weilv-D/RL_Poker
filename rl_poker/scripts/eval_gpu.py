@@ -438,8 +438,10 @@ def evaluate_checkpoint(path: str, cfg: EvalConfig, device: torch.device) -> dic
 
 def main():
     parser = argparse.ArgumentParser(description="Evaluate RL Poker policy on GPU")
+    default_root = Path(__file__).resolve().parents[1] / "checkpoints"
+    default_ckpt_dir = str(default_root)
     parser.add_argument("--checkpoint", type=str, default=None)
-    parser.add_argument("--checkpoint-dir", type=str, default=None)
+    parser.add_argument("--checkpoint-dir", type=str, default=default_ckpt_dir)
     parser.add_argument("--checkpoint-glob", type=str, default="*_step_*.pt")
     parser.add_argument("--output-json", type=str, default=None)
     parser.add_argument("--episodes", type=int, default=100)
@@ -502,7 +504,7 @@ def main():
     if args.checkpoint:
         results.append(evaluate_checkpoint(args.checkpoint, cfg, device))
     else:
-        ckpts = sorted(Path(args.checkpoint_dir).glob(args.checkpoint_glob))
+        ckpts = sorted(Path(args.checkpoint_dir).rglob(args.checkpoint_glob))
         for path in ckpts:
             results.append(evaluate_checkpoint(str(path), cfg, device))
 

@@ -540,10 +540,12 @@ Examples:
         "--verbose", "-v", action="store_true", help="Print detailed move-by-move output"
     )
 
+    default_root = Path(__file__).resolve().parents[1] / "checkpoints"
+    default_pool = str(default_root)
     parser.add_argument(
         "--pool-dir",
         type=str,
-        default=None,
+        default=default_pool,
         help="Directory containing policy pool checkpoints (required for policy_pool opponent type)",
     )
 

@@ -25,6 +25,7 @@ HIDDEN_SIZE="${HIDDEN_SIZE:-256}"
 LEARNING_RATE="${LEARNING_RATE:-2.5e-4}"
 SEED="${SEED:-42}"
 CHECKPOINT_DIR="${CHECKPOINT_DIR:-${PROJECT_ROOT}/checkpoints}"
+RUN_NAME="${RUN_NAME:-}"
 QUALITY=0
 QUALITY_EXTRA_ARGS=()
 DEFAULT_EXTRA_ARGS=(
@@ -151,17 +152,22 @@ echo "Seed:         $SEED"
 echo ""
 
 # Run training
-"$PYTHON" -m rl_poker.scripts.train \
-    --num-envs "$NUM_ENVS" \
-    --total-timesteps "$TOTAL_TIMESTEPS" \
-    --rollout-steps "$ROLLOUT_STEPS" \
-    --hidden-size "$HIDDEN_SIZE" \
-    --learning-rate "$LEARNING_RATE" \
-    --seed "$SEED" \
-    --checkpoint-dir "$CHECKPOINT_DIR" \
-    "${DEFAULT_EXTRA_ARGS[@]}" \
-    "${QUALITY_EXTRA_ARGS[@]}" \
-    "${EXTRA_ARGS[@]}"
+CMD=(
+    "$PYTHON" -m rl_poker.scripts.train
+    --num-envs "$NUM_ENVS"
+    --total-timesteps "$TOTAL_TIMESTEPS"
+    --rollout-steps "$ROLLOUT_STEPS"
+    --hidden-size "$HIDDEN_SIZE"
+    --learning-rate "$LEARNING_RATE"
+    --seed "$SEED"
+    --checkpoint-dir "$CHECKPOINT_DIR"
+)
+if [[ -n "$RUN_NAME" ]]; then
+    CMD+=(--run-name "$RUN_NAME")
+fi
+CMD+=("${DEFAULT_EXTRA_ARGS[@]}" "${QUALITY_EXTRA_ARGS[@]}" "${EXTRA_ARGS[@]}")
+
+"${CMD[@]}"
 
 echo ""
 echo "✅ Training complete!"
