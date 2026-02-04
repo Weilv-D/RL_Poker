@@ -26,7 +26,7 @@ checkpoints/
 # Tooling / local
 .sisyphus/
 .opencode/
-human_play/
+scripts/play_human_vs_ai.py
 
 # OS
 .DS_Store
