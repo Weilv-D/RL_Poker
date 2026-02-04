@@ -18,6 +18,7 @@ import os
 import time
 import re
 import sys
+import atexit
 from dataclasses import dataclass
 
 import numpy as np
@@ -333,6 +334,7 @@ def train(config: TrainConfig):
     total_games = 0
     total_wins = {i: 0 for i in range(4)}
     start_update = 1
+    done_processed = torch.zeros(config.num_envs, dtype=torch.bool, device=device)
 
     if config.resume_path:
         ckpt = torch.load(config.resume_path, map_location=device)
@@ -407,6 +409,8 @@ def train(config: TrainConfig):
         print(f"Logging to {log_path}")
     except Exception as exc:
         print(f"Warning: could not open log file at {log_path}: {exc}")
+    else:
+        atexit.register(log_file.close)
 
     def _update_latest(ckpt_path: str) -> None:
         latest_path = os.path.join(run_dir, "latest.pt")
@@ -472,7 +476,10 @@ def train(config: TrainConfig):
 
         ev_ema = np.array([entry.stats.ev_ema for entry in pool.entries], dtype=np.float32)
         baseline = ev_ema[opp_ids].mean(axis=1) if opp_ids.size > 0 else 0.0
-        episode_adv = learner_scores - opponent_scores.mean(axis=1)
+        if opponent_scores.size > 0:
+            episode_adv = learner_scores - opponent_scores.mean(axis=1)
+        else:
+            episode_adv = learner_scores
         bonuses = alpha * (episode_adv - baseline)
         return bonuses.astype(np.float32)
 
@@ -491,6 +498,13 @@ def train(config: TrainConfig):
             return
 
         done_idx = dones.nonzero().squeeze(-1)
+        if done_idx.numel() == 0:
+            return
+        if done_processed is not None:
+            fresh_mask = ~done_processed[done_idx]
+            if not fresh_mask.any():
+                return
+            done_idx = done_idx[fresh_mask]
 
         # Update win counts
         winners = new_state.winner[done_idx].detach().cpu().numpy()
@@ -529,6 +543,7 @@ def train(config: TrainConfig):
 
         # Clear last step indices for finished envs
         last_step_idx_buf[done_idx] = -1
+        done_processed[done_idx] = True
 
         # Resample opponents for finished envs
         opponent_ids[done_idx] = torch.as_tensor(
@@ -738,6 +753,7 @@ def train(config: TrainConfig):
                         done_idx = dones.nonzero().squeeze(-1)
                         public_played_counts[done_idx] = 0.0
                         opp_rank_logits[done_idx] = 0.0
+                        done_processed[done_idx] = False
                         if history_config.enabled:
                             history_buffer.reset_envs(done_idx)
                         state = env.reset_done_envs(new_state, dones)
@@ -836,6 +852,7 @@ def train(config: TrainConfig):
                         done_idx = dones.nonzero().squeeze(-1)
                         public_played_counts[done_idx] = 0.0
                         opp_rank_logits[done_idx] = 0.0
+                        done_processed[done_idx] = False
                         if history_config.enabled:
                             history_buffer.reset_envs(done_idx)
                         state = env.reset_done_envs(new_state, dones)
