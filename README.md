@@ -30,6 +30,27 @@ source .venv/bin/activate
 pip install -e .
 ```
 
+## Playground (Web & TUI)
+
+Web UI (FastAPI):
+
+```bash
+python playground/web_server.py
+```
+
+Open `http://127.0.0.1:8000` and use the in-game `重发 / 开局` controls to shuffle and start. Optional env vars:
+
+- `RL_POKER_HOST` / `RL_POKER_PORT` to bind a different address/port
+- `RL_POKER_API_TOKEN` to require a token for `/api/*` (open `/?token=...` once)
+
+TUI (Rich):
+
+```bash
+python playground/play_tui.py --tui
+```
+
+If checkpoints are present under `checkpoints/`, the UI will offer them; otherwise it falls back to random opponents.
+
 ## Training (First Run)
 
 Recommended GPU preset:

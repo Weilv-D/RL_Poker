@@ -24,6 +24,5 @@ checkpoints/
 *.tfevents.*
 
 # Tooling / local
-playground/
 # OS
 .DS_Store
