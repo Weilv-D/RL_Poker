@@ -587,7 +587,20 @@ Examples:
 
     log_run_dir = os.path.join(os.path.abspath(args.log_dir), _sanitize_prefix(run_prefix))
     os.makedirs(log_run_dir, exist_ok=True)
-    log_path = os.path.join(log_run_dir, f"{_sanitize_prefix(run_prefix)}_eval.log")
+
+    def _allocate_eval_log(prefix: str, root: str) -> str:
+        prefix = _sanitize_prefix(prefix)
+        max_id = 0
+        for fname in os.listdir(root):
+            stem, _ = os.path.splitext(fname)
+            if not stem.startswith(prefix + "_eval_"):
+                continue
+            tail = stem[len(prefix) + len("_eval_") :]
+            if tail.isdigit():
+                max_id = max(max_id, int(tail))
+        return os.path.join(root, f"{prefix}_eval_{max_id + 1:03d}.log")
+
+    log_path = _allocate_eval_log(run_prefix, log_run_dir)
 
     class _Tee:
         def __init__(self, *streams):

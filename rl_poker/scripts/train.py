@@ -408,6 +408,22 @@ def train(config: TrainConfig):
         print(f"Logging to {log_path}")
     except Exception as exc:
         print(f"Warning: could not open log file at {log_path}: {exc}")
+
+    def _update_latest(ckpt_path: str) -> None:
+        latest_path = os.path.join(run_dir, "latest.pt")
+        try:
+            if os.path.islink(latest_path) or os.path.exists(latest_path):
+                os.unlink(latest_path)
+            rel = os.path.relpath(ckpt_path, run_dir)
+            os.symlink(rel, latest_path)
+        except Exception:
+            # Fallback: copy file if symlink is not supported
+            try:
+                import shutil
+
+                shutil.copy2(ckpt_path, latest_path)
+            except Exception:
+                pass
     start_time = time.time()
     sps = 0.0
 
@@ -962,6 +978,7 @@ def train(config: TrainConfig):
                 ckpt_path,
             )
             print(f"Saved checkpoint: {ckpt_path}")
+            _update_latest(ckpt_path)
             next_ckpt_id += 1
 
         # Add snapshot to pool
@@ -984,6 +1001,7 @@ def train(config: TrainConfig):
         },
         final_path,
     )
+    _update_latest(final_path)
 
     print("\nTraining complete!")
     print(f"Total steps: {total_steps:,}")

@@ -111,7 +111,7 @@ python -m rl_poker.scripts.eval_gpu --checkpoint-dir checkpoints/star --episodes
 ```
 
 ```bash
-python -m rl_poker.scripts.evaluate --pool-dir checkpoints/star --episodes 200
+python -m rl_poker.scripts.evaluate --pool-dir checkpoints/star --run-name star --episodes 200
 ```
 
 ## 人机对弈（TUI）

@@ -77,12 +77,17 @@ Options (key only):
     --belief-temp T        Belief temperature (default: 2.0)
     -h, --help             Show this help
 
+Environment variables:
+    RUN_NAME               Run name prefix (used for checkpoints/logs)
+    CHECKPOINT_DIR         Base checkpoint directory (default: ./checkpoints)
+    LOG_DIR                Base log directory (default: ./runs)
+
 Examples:
   # Quick test (5 minutes)
   ./scripts/train_gpu.sh --total-timesteps 1000000 --num-envs 256 --rollout-steps 64
 
   # Quality-first (recommended)
-  ./scripts/train_gpu.sh --quality
+  RUN_NAME=star ./scripts/train_gpu.sh --quality
 
   # Standard training (1 hour)
   ./scripts/train_gpu.sh --total-timesteps 10000000 --num-envs 512 --rollout-steps 64
