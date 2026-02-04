@@ -24,8 +24,6 @@ checkpoints/
 *.tfevents.*
 
 # Tooling / local
-.sisyphus/
-.opencode/
 scripts/play_human_vs_ai.py
 
 # OS
