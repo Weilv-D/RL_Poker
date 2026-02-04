@@ -289,8 +289,14 @@ def train(config: TrainConfig):
                 max_id = max(max_id, int(suffix))
         return f"{prefix}_{max_id + 1:03d}"
 
-    run_prefix = config.run_name or "rl_poker"
-    run_name = _allocate_run_name(run_prefix, checkpoint_root)
+    run_prefix = config.run_name or None
+    if run_prefix:
+        run_dir = os.path.join(checkpoint_root, _sanitize_prefix(run_prefix))
+        os.makedirs(run_dir, exist_ok=True)
+        run_name = _allocate_run_name(run_prefix, run_dir)
+    else:
+        run_dir = checkpoint_root
+        run_name = _allocate_run_name("rl_poker", checkpoint_root)
 
     def _derive_run_name(path: str) -> str:
         base = os.path.basename(path)
@@ -349,6 +355,7 @@ def train(config: TrainConfig):
                 start_update = 1
 
         run_name = _derive_run_name(config.resume_path)
+        run_dir = os.path.dirname(os.path.abspath(config.resume_path))
         if config.run_name:
             print("Note: --run-name ignored when resuming from checkpoint.")
         print(f"Resuming from {config.resume_path}")
@@ -894,7 +901,7 @@ def train(config: TrainConfig):
 
         # Save checkpoint
         if update % config.save_interval == 0:
-            ckpt_path = os.path.join(config.checkpoint_dir, f"{run_name}_step_{total_steps}.pt")
+            ckpt_path = os.path.join(run_dir, f"{run_name}_step_{total_steps}.pt")
             torch.save(
                 {
                     "network": network.state_dict(),
@@ -916,7 +923,7 @@ def train(config: TrainConfig):
             )
 
     # Final save
-    final_path = os.path.join(config.checkpoint_dir, f"{run_name}_final.pt")
+    final_path = os.path.join(run_dir, f"{run_name}_final.pt")
     torch.save(
         {
             "network": network.state_dict(),
