@@ -25,6 +25,7 @@ HIDDEN_SIZE="${HIDDEN_SIZE:-256}"
 LEARNING_RATE="${LEARNING_RATE:-2.5e-4}"
 SEED="${SEED:-42}"
 CHECKPOINT_DIR="${CHECKPOINT_DIR:-${PROJECT_ROOT}/checkpoints}"
+LOG_DIR="${LOG_DIR:-${PROJECT_ROOT}/runs}"
 RUN_NAME="${RUN_NAME:-}"
 QUALITY=0
 QUALITY_EXTRA_ARGS=()
@@ -161,6 +162,7 @@ CMD=(
     --learning-rate "$LEARNING_RATE"
     --seed "$SEED"
     --checkpoint-dir "$CHECKPOINT_DIR"
+    --log-dir "$LOG_DIR"
 )
 if [[ -n "$RUN_NAME" ]]; then
     CMD+=(--run-name "$RUN_NAME")

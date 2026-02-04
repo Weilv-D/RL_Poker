@@ -16,6 +16,9 @@ Usage:
 """
 
 import argparse
+import os
+import re
+import sys
 from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -548,6 +551,8 @@ Examples:
         default=default_pool,
         help="Directory containing policy pool checkpoints (required for policy_pool opponent type)",
     )
+    parser.add_argument("--run-name", type=str, default=None, help="Run name for log directory")
+    parser.add_argument("--log-dir", type=str, default="runs", help="Directory for evaluation logs")
 
     args = parser.parse_args()
 
@@ -566,6 +571,44 @@ Examples:
     if needs_pool and args.pool_dir is None:
         print("Error: --pool-dir is required when using 'policy_pool' opponent type")
         sys.exit(1)
+
+    # Setup eval logging
+    def _sanitize_prefix(prefix: str) -> str:
+        prefix = prefix.strip().replace(" ", "-")
+        return re.sub(r"[^A-Za-z0-9._-]", "_", prefix) or "eval"
+
+    run_prefix = args.run_name
+    if not run_prefix and args.pool_dir:
+        base = Path(args.pool_dir).resolve().name
+        if base not in {"checkpoints", "checkpoint", "ckpt"}:
+            run_prefix = base
+    if not run_prefix:
+        run_prefix = "eval"
+
+    log_run_dir = os.path.join(os.path.abspath(args.log_dir), _sanitize_prefix(run_prefix))
+    os.makedirs(log_run_dir, exist_ok=True)
+    log_path = os.path.join(log_run_dir, f"{_sanitize_prefix(run_prefix)}_eval.log")
+
+    class _Tee:
+        def __init__(self, *streams):
+            self.streams = streams
+
+        def write(self, data):
+            for s in self.streams:
+                s.write(data)
+                s.flush()
+
+        def flush(self):
+            for s in self.streams:
+                s.flush()
+
+    try:
+        log_file = open(log_path, "a", encoding="utf-8")
+        sys.stdout = _Tee(sys.__stdout__, log_file)
+        sys.stderr = _Tee(sys.__stderr__, log_file)
+        print(f"Logging to {log_path}")
+    except Exception as exc:
+        print(f"Warning: could not open log file at {log_path}: {exc}")
 
     # Run evaluation
     try:

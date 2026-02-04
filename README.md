@@ -32,11 +32,11 @@ pip install -e .
 ```
 
 ```bash
-python -m rl_poker.scripts.train --total-timesteps 100000
+python -m rl_poker.scripts.train --run-name star --total-timesteps 100000
 ```
 
 ```bash
-python -m rl_poker.scripts.eval_gpu --checkpoint checkpoints/xxx.pt --episodes 200
+python -m rl_poker.scripts.eval_gpu --checkpoint checkpoints/star/star_001_step_100000.pt --episodes 200
 ```
 
 ## Training
@@ -47,25 +47,83 @@ Default GPU training preset (1024 envs) is embedded in the script:
 ./scripts/train_gpu.sh
 ```
 
+Recommended (explicit run name):
+
+```bash
+RUN_NAME=star ./scripts/train_gpu.sh --quality
+```
+
 Override any parameter on the command line:
 
 ```bash
-./scripts/train_gpu.sh --num-envs 1024 --rollout-steps 64 --total-timesteps 65536000
+RUN_NAME=star ./scripts/train_gpu.sh --num-envs 1024 --rollout-steps 64 --total-timesteps 65536000
 ```
 
 Notes:
 - Keep `total_timesteps` divisible by `num_envs * rollout_steps` for clean updates.
 - For memory pressure, reduce `--rollout-steps` or `--history-window`.
 
+### Checkpoint Naming & Layout
+
+When you pass `--run-name <name>`, checkpoints are saved under:
+
+```
+checkpoints/<name>/<name>_###_step_<N>.pt
+```
+
+Examples:
+
+```
+checkpoints/star/star_001_step_14068672.pt
+checkpoints/garlic/garlic_002_step_55498804.pt
+```
+
+The `###` increments by save order (not by step). Resuming from a checkpoint continues numbering from the latest in that folder.
+
+### Logs
+
+Training logs are written to:
+
+```
+runs/<run-name>/<run-name>_###.log
+```
+
+Example:
+
+```
+runs/star/star_001.log
+```
+
+Evaluation logs (GPU/CPU) are written to:
+
+```
+runs/<run-name>/<run-name>_eval_###.log
+```
+
 ## Evaluation
 
 ```bash
-python -m rl_poker.scripts.eval_gpu --checkpoint checkpoints/xxx.pt --episodes 200
+python -m rl_poker.scripts.eval_gpu --checkpoint checkpoints/star/star_001_step_14068672.pt --episodes 200
 ```
 
 ```bash
-python -m rl_poker.scripts.evaluate --checkpoint checkpoints/xxx.pt --episodes 200
+python -m rl_poker.scripts.eval_gpu --checkpoint-dir checkpoints/star --episodes 200
 ```
+
+```bash
+python -m rl_poker.scripts.evaluate --pool-dir checkpoints/star --episodes 200
+```
+
+## Human vs AI (TUI)
+
+```bash
+python scripts/play_human_vs_ai.py --tui
+```
+
+Tips:
+- `Enter` / `p` / `pass` = pass
+- `0 1 2` = play by hand indices
+- `3H 4D` = play by card names
 
 ## Utilities
 

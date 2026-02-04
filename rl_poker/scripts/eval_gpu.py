@@ -6,6 +6,9 @@ Supports evaluating a single checkpoint or a directory of checkpoints.
 """
 
 import argparse
+import os
+import re
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
@@ -443,6 +446,8 @@ def main():
     parser.add_argument("--checkpoint", type=str, default=None)
     parser.add_argument("--checkpoint-dir", type=str, default=default_ckpt_dir)
     parser.add_argument("--checkpoint-glob", type=str, default="*_step_*.pt")
+    parser.add_argument("--run-name", type=str, default=None, help="Run name for log directory")
+    parser.add_argument("--log-dir", type=str, default="runs", help="Directory for evaluation logs")
     parser.add_argument("--output-json", type=str, default=None)
     parser.add_argument("--episodes", type=int, default=100)
     parser.add_argument("--num-envs", type=int, default=128)
@@ -473,6 +478,64 @@ def main():
 
     if args.checkpoint is None and args.checkpoint_dir is None:
         raise SystemExit("Provide --checkpoint or --checkpoint-dir")
+
+    def _sanitize_prefix(prefix: str) -> str:
+        prefix = prefix.strip().replace(" ", "-")
+        return re.sub(r"[^A-Za-z0-9._-]", "_", prefix) or "eval"
+
+    def _derive_prefix_from_checkpoint(path: str) -> str:
+        stem = Path(path).stem
+        m = re.match(r"^(.*)_\\d+_(step_|final)", stem)
+        if m:
+            return m.group(1)
+        return stem
+
+    def _allocate_eval_log(prefix: str, root: str) -> str:
+        os.makedirs(root, exist_ok=True)
+        prefix = _sanitize_prefix(prefix)
+        max_id = 0
+        for fname in os.listdir(root):
+            stem, _ = os.path.splitext(fname)
+            if not stem.startswith(prefix + "_eval_"):
+                continue
+            tail = stem[len(prefix) + len("_eval_") :]
+            if tail.isdigit():
+                max_id = max(max_id, int(tail))
+        return os.path.join(root, f"{prefix}_eval_{max_id + 1:03d}.log")
+
+    run_prefix = args.run_name
+    if not run_prefix and args.checkpoint:
+        run_prefix = _derive_prefix_from_checkpoint(args.checkpoint)
+    if not run_prefix and args.checkpoint_dir:
+        base = Path(args.checkpoint_dir).resolve().name
+        if base not in {"checkpoints", "checkpoint", "ckpt"}:
+            run_prefix = base
+    if not run_prefix:
+        run_prefix = "eval"
+
+    log_run_dir = os.path.join(os.path.abspath(args.log_dir), _sanitize_prefix(run_prefix))
+    log_path = _allocate_eval_log(run_prefix, log_run_dir)
+
+    class _Tee:
+        def __init__(self, *streams):
+            self.streams = streams
+
+        def write(self, data):
+            for s in self.streams:
+                s.write(data)
+                s.flush()
+
+        def flush(self):
+            for s in self.streams:
+                s.flush()
+
+    try:
+        log_file = open(log_path, "a", encoding="utf-8")
+        sys.stdout = _Tee(sys.__stdout__, log_file)
+        sys.stderr = _Tee(sys.__stderr__, log_file)
+        print(f"Logging to {log_path}")
+    except Exception as exc:
+        print(f"Warning: could not open log file at {log_path}: {exc}")
 
     device = torch.device("cuda" if (not args.no_cuda and torch.cuda.is_available()) else "cpu")
     cfg = EvalConfig(

@@ -17,6 +17,7 @@ import argparse
 import os
 import time
 import re
+import sys
 from dataclasses import dataclass
 
 import numpy as np
@@ -100,6 +101,7 @@ class TrainConfig:
     save_interval: int = 50
     checkpoint_dir: str = "checkpoints"
     run_name: str | None = None
+    log_dir: str = "runs"
 
     # Misc
     seed: int = 42
@@ -304,11 +306,11 @@ def train(config: TrainConfig):
     else:
         base_name = os.path.basename(checkpoint_root.rstrip(os.sep))
         if base_name and base_name not in {"checkpoints", "checkpoint", "ckpt"}:
-        run_prefix = _sanitize_prefix(base_name)
-        next_ckpt_id = _next_checkpoint_id(run_prefix, checkpoint_root)
+            run_prefix = _sanitize_prefix(base_name)
+            next_ckpt_id = _next_checkpoint_id(run_prefix, checkpoint_root)
         else:
-        run_prefix = "rl_poker"
-        next_ckpt_id = _next_checkpoint_id(run_prefix, checkpoint_root)
+            run_prefix = "rl_poker"
+            next_ckpt_id = _next_checkpoint_id(run_prefix, checkpoint_root)
         run_dir = checkpoint_root
 
     def _derive_prefix(path: str) -> str:
@@ -378,6 +380,34 @@ def train(config: TrainConfig):
         print(f"Resuming from {config.resume_path}")
         print(f"Start update: {start_update}")
         print(f"Total steps loaded: {total_steps:,}")
+
+    # Setup logging file by run-name directory
+    log_root = os.path.abspath(config.log_dir)
+    os.makedirs(log_root, exist_ok=True)
+    log_run_dir = os.path.join(log_root, run_prefix)
+    os.makedirs(log_run_dir, exist_ok=True)
+    log_path = os.path.join(log_run_dir, f"{run_prefix}_{next_ckpt_id:03d}.log")
+
+    class _Tee:
+        def __init__(self, *streams):
+            self.streams = streams
+
+        def write(self, data):
+            for s in self.streams:
+                s.write(data)
+                s.flush()
+
+        def flush(self):
+            for s in self.streams:
+                s.flush()
+
+    try:
+        log_file = open(log_path, "a", encoding="utf-8")
+        sys.stdout = _Tee(sys.__stdout__, log_file)
+        sys.stderr = _Tee(sys.__stderr__, log_file)
+        print(f"Logging to {log_path}")
+    except Exception as exc:
+        print(f"Warning: could not open log file at {log_path}: {exc}")
     start_time = time.time()
     sps = 0.0
 
@@ -1021,6 +1051,7 @@ def main():
         default=None,
         help="Run name prefix (e.g., garlic -> garlic_001, garlic_002 ...)",
     )
+    parser.add_argument("--log-dir", type=str, default="runs", help="Directory for training logs")
     parser.add_argument("--resume", type=str, default=None, help="Resume from checkpoint path")
     parser.add_argument(
         "--resume-update",
@@ -1073,6 +1104,7 @@ def main():
         save_interval=args.save_interval,
         checkpoint_dir=args.checkpoint_dir,
         run_name=args.run_name,
+        log_dir=args.log_dir,
         seed=args.seed,
         cuda=not args.no_cuda,
         resume_path=args.resume,
