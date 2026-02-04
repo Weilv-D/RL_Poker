@@ -27,6 +27,7 @@ from rl_poker.rl import (
     HistoryBuffer,
     build_response_rank_weights,
 )
+from rl_poker.scripts.train import TrainConfig as TrainConfig
 
 
 def calculate_expected_score(rating_a: float, rating_b: float) -> float:
@@ -90,7 +91,7 @@ def _parse_heuristic_styles(styles: str) -> list[str]:
 
 
 def load_checkpoint(path: str, device: torch.device) -> tuple[object | None, dict[str, torch.Tensor]]:
-    ckpt = torch.load(path, map_location=device)
+    ckpt = torch.load(path, map_location=device, weights_only=False)
     if not isinstance(ckpt, dict):
         raise ValueError(f"Checkpoint at {path} is not a dict")
     config = ckpt.get("config", None)
