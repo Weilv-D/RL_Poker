@@ -102,6 +102,8 @@ class TrainConfig:
     # Misc
     seed: int = 42
     cuda: bool = True
+    resume_path: str | None = None
+    resume_update: int | None = None
 
 
 def _parse_heuristic_styles(styles: str) -> list[str]:
@@ -264,6 +266,15 @@ def train(config: TrainConfig):
     os.makedirs(checkpoint_root, exist_ok=True)
     run_name = f"rl_poker_{config.seed}_{int(time.time())}"
 
+    def _derive_run_name(path: str) -> str:
+        base = os.path.basename(path)
+        stem = os.path.splitext(base)[0]
+        if "_step_" in stem:
+            return stem.split("_step_")[0]
+        if stem.endswith("_final"):
+            return stem[: -len("_final")]
+        return stem
+
     # Training state
     state = env.reset()
     if history_config.enabled:
@@ -272,6 +283,49 @@ def train(config: TrainConfig):
     total_steps = 0
     total_games = 0
     total_wins = {i: 0 for i in range(4)}
+    start_update = 1
+
+    if config.resume_path:
+        ckpt = torch.load(config.resume_path, map_location=device)
+        if not isinstance(ckpt, dict):
+            raise ValueError(f"Checkpoint {config.resume_path} is not a dict")
+        net_state = ckpt.get("network")
+        opt_state = ckpt.get("optimizer")
+        if isinstance(net_state, dict):
+            network.load_state_dict(net_state)
+        else:
+            raise ValueError("Checkpoint missing network state_dict")
+        if isinstance(opt_state, dict):
+            optimizer.load_state_dict(opt_state)
+        total_steps = int(ckpt.get("step", 0))
+        total_games = int(ckpt.get("games", 0))
+        ckpt_wins = ckpt.get("wins")
+        if isinstance(ckpt_wins, dict) and len(ckpt_wins) == 4:
+            total_wins = {int(k): int(v) for k, v in ckpt_wins.items()}
+        elif isinstance(ckpt_wins, list) and len(ckpt_wins) == 4:
+            total_wins = {i: int(ckpt_wins[i]) for i in range(4)}
+        else:
+            total_games = 0
+            total_wins = {i: 0 for i in range(4)}
+            print("Warning: checkpoint missing win counts; Win% will be tracked from resume.")
+
+        if config.resume_update is not None:
+            start_update = int(config.resume_update) + 1
+        else:
+            ckpt_update = ckpt.get("update")
+            if isinstance(ckpt_update, int):
+                start_update = ckpt_update + 1
+            else:
+                print(
+                    "Warning: checkpoint missing update index. "
+                    "Pass --resume-update to continue without redoing updates."
+                )
+                start_update = 1
+
+        run_name = _derive_run_name(config.resume_path)
+        print(f"Resuming from {config.resume_path}")
+        print(f"Start update: {start_update}")
+        print(f"Total steps loaded: {total_steps:,}")
     start_time = time.time()
     sps = 0.0
 
@@ -438,7 +492,7 @@ def train(config: TrainConfig):
             device=device,
         )
 
-    for update in range(1, num_updates + 1):
+    for update in range(start_update, num_updates + 1):
         # Reset rollout buffers
         obs_buf.zero_()
         act_buf.zero_()
@@ -820,6 +874,8 @@ def train(config: TrainConfig):
                     "config": config,
                     "step": total_steps,
                     "games": total_games,
+                    "wins": total_wins,
+                    "update": update,
                 },
                 ckpt_path,
             )
@@ -840,6 +896,8 @@ def train(config: TrainConfig):
             "config": config,
             "step": total_steps,
             "games": total_games,
+            "wins": total_wins,
+            "update": num_updates,
         },
         final_path,
     )
@@ -904,6 +962,13 @@ def main():
     parser.add_argument("--log-interval", type=int, default=1)
     parser.add_argument("--save-interval", type=int, default=50)
     parser.add_argument("--checkpoint-dir", type=str, default="checkpoints")
+    parser.add_argument("--resume", type=str, default=None, help="Resume from checkpoint path")
+    parser.add_argument(
+        "--resume-update",
+        type=int,
+        default=None,
+        help="Update index to resume from (if checkpoint lacks update)",
+    )
 
     # Misc
     parser.add_argument("--seed", type=int, default=42)
@@ -950,6 +1015,8 @@ def main():
         checkpoint_dir=args.checkpoint_dir,
         seed=args.seed,
         cuda=not args.no_cuda,
+        resume_path=args.resume,
+        resume_update=args.resume_update,
     )
 
     train(config)
