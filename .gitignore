@@ -26,3 +26,4 @@ checkpoints/
 # Tooling / local
 # OS
 .DS_Store
+scripts/tmp_eval_matchup.py
