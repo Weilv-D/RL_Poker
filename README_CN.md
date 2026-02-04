@@ -2,7 +2,6 @@
 
 面向四人 Big Two 风格扑克的强化学习项目，结合 CPU 规则引擎、PettingZoo AEC 环境与 GPU 向量化训练。
 
-GitHub 简介建议：`面向 Big Two 的多智能体 GPU 强化学习，含 PSRO-lite 对手池与信念增强 PPO。`
 
 [English](README.md) | 中文
 

@@ -2,8 +2,6 @@
 
 GPU-accelerated reinforcement learning for a 4-player Big Two-style poker variant, combining a CPU rules engine, a PettingZoo AEC environment, and GPU vectorized training.
 
-GitHub short description: `GPU-accelerated multi-agent RL for Big Two poker with PSRO-lite opponents and belief-augmented PPO.`
-
 English | [中文](README_CN.md)
 
 ![RL Poker overview](assets/rl_poker_overview.svg)
