@@ -146,7 +146,7 @@ async function triggerAIMove() {
         const data = await res.json();
         if (data.did_move) {
             // AI 移动成功，刷新状态
-            setTimeout(fetchState, 800); // 延迟刷新以便观察
+            setTimeout(fetchState, 300); // 延迟刷新以便观察
         }
     } catch (e) {
         console.error("AI move error", e);
