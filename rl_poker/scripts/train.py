@@ -16,6 +16,7 @@ Key features:
 import argparse
 import os
 import time
+import re
 from dataclasses import dataclass
 
 import numpy as np
@@ -98,6 +99,7 @@ class TrainConfig:
     log_interval: int = 1
     save_interval: int = 50
     checkpoint_dir: str = "checkpoints"
+    run_name: str | None = None
 
     # Misc
     seed: int = 42
@@ -264,7 +266,31 @@ def train(config: TrainConfig):
     # Logging
     checkpoint_root = os.path.abspath(config.checkpoint_dir)
     os.makedirs(checkpoint_root, exist_ok=True)
-    run_name = f"rl_poker_{config.seed}_{int(time.time())}"
+    def _sanitize_prefix(prefix: str) -> str:
+        prefix = prefix.strip().replace(" ", "-")
+        prefix = re.sub(r"[^A-Za-z0-9._-]", "_", prefix)
+        return prefix or "run"
+
+    def _allocate_run_name(prefix: str, root: str) -> str:
+        prefix = _sanitize_prefix(prefix)
+        max_id = 0
+        for fname in os.listdir(root):
+            stem, _ = os.path.splitext(fname)
+            if not stem.startswith(prefix + "_"):
+                continue
+            tail = stem[len(prefix) + 1 :]
+            if "_step_" in tail:
+                suffix = tail.split("_step_")[0]
+            elif tail.endswith("_final"):
+                suffix = tail[: -len("_final")]
+            else:
+                suffix = tail
+            if suffix.isdigit():
+                max_id = max(max_id, int(suffix))
+        return f"{prefix}_{max_id + 1:03d}"
+
+    run_prefix = config.run_name or "rl_poker"
+    run_name = _allocate_run_name(run_prefix, checkpoint_root)
 
     def _derive_run_name(path: str) -> str:
         base = os.path.basename(path)
@@ -323,6 +349,8 @@ def train(config: TrainConfig):
                 start_update = 1
 
         run_name = _derive_run_name(config.resume_path)
+        if config.run_name:
+            print("Note: --run-name ignored when resuming from checkpoint.")
         print(f"Resuming from {config.resume_path}")
         print(f"Start update: {start_update}")
         print(f"Total steps loaded: {total_steps:,}")
@@ -962,6 +990,12 @@ def main():
     parser.add_argument("--log-interval", type=int, default=1)
     parser.add_argument("--save-interval", type=int, default=50)
     parser.add_argument("--checkpoint-dir", type=str, default="checkpoints")
+    parser.add_argument(
+        "--run-name",
+        type=str,
+        default=None,
+        help="Run name prefix (e.g., garlic -> garlic_001, garlic_002 ...)",
+    )
     parser.add_argument("--resume", type=str, default=None, help="Resume from checkpoint path")
     parser.add_argument(
         "--resume-update",
@@ -1013,6 +1047,7 @@ def main():
         log_interval=args.log_interval,
         save_interval=args.save_interval,
         checkpoint_dir=args.checkpoint_dir,
+        run_name=args.run_name,
         seed=args.seed,
         cuda=not args.no_cuda,
         resume_path=args.resume,
