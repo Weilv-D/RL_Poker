@@ -22,7 +22,17 @@ def compute_gae(
         advantages: [T, B]
         returns: [T, B]
     """
-    T = rewards.shape[0]
+    if rewards.ndim != 2 or dones.ndim != 2:
+        raise ValueError(f"rewards/dones must be [T, B], got {rewards.shape} / {dones.shape}")
+    T, B = rewards.shape
+    if dones.shape != rewards.shape:
+        raise ValueError(f"dones must match rewards shape, got {dones.shape} vs {rewards.shape}")
+    if values.ndim != 2:
+        raise ValueError(f"values must be [T+1, B], got {values.shape}")
+    if values.shape[0] != T + 1:
+        raise ValueError(f"values must have shape [T+1, B] where T={T}, got {values.shape}")
+    if values.shape[1] != B:
+        raise ValueError(f"values batch size must match rewards, got {values.shape} vs {rewards.shape}")
     advantages = torch.zeros_like(rewards)
     lastgaelam = torch.zeros_like(rewards[0])
 
