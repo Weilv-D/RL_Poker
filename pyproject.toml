@@ -33,6 +33,13 @@ dev = [
     "pytest-cov>=4.0.0",
     "ruff>=0.1.0",
 ]
+playground = [
+    "fastapi>=0.100.0",
+    "uvicorn[standard]>=0.23.0",
+    "websockets>=11.0",
+    "rich>=13.0.0",
+    "qrcode>=7.0",
+]
 
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]
