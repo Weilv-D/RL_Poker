@@ -22,6 +22,35 @@ English | [中文](README_CN.md)
 - `rl_poker/agents`: random, heuristic, policy pool
 - `scripts/`: training/evaluation helpers and utilities
 
+## Rules & Scoring (Big Two Variant)
+
+- 4 players, 13 cards each (standard 52-card deck)
+- Heart 3 leads the first trick; the first move must contain Heart 3
+- Allowed hand types: single, pair, straight (5+ consecutive, 3-K only), consecutive pairs (3+ pairs, 3-K only), 3+2, 4+3
+- Tail-hand exemptions: 3+0/3+1 and 4+0/4+1/4+2 only when the move uses all remaining cards
+- If the previous player used an exemption, the next player must answer with the full standard size (5 for 3+2, 7 for 4+3) or pass
+- Game ends when 3 players finish; scores are +2 (1st), +1 (2nd), -1 (3rd), -2 (4th)
+
+## Architecture Overview
+
+- CPU rules engine (`rl_poker/engine`) for correctness and PettingZoo AEC integration
+- GPU vectorized environment (`rl_poker/rl/gpu_env.py`) for high-throughput training
+- Fixed GPU action space + mask (`rl_poker/moves/gpu_action_mask.py`) to avoid per-step CPU enumeration
+- Dynamic action encoding for CPU AEC env (`rl_poker/moves/action_encoding.py`, `MAX_ACTIONS=1000`)
+- Parity tests to validate GPU legality against CPU rules (`tests/test_gpu_parity.py`)
+
+## Observation & Action Encoding
+
+- GPU base observation: 52-card hand + 13 rank counts + 5 context features
+- Optional public opponent rank counts (`reveal_opponent_ranks`)
+- Training augments observations with belief features (3×13), opponents’ remaining cards (3), and public played ranks (13)
+- GPU actions are a fixed pre-enumerated table (PASS, singles, pairs, straights, consecutive pairs, 3+2, 4+3, exemptions), masked per state on GPU
+- PettingZoo AEC uses dynamic legal-move enumeration and an action mask inside the observation dict
+
+## Docs
+
+- Technical report (Chinese): `docs/TECHNICAL_REPORT_CN.md`
+
 ## Quick Start
 
 ```bash
@@ -50,6 +79,8 @@ python playground/play_tui.py --tui
 ```
 
 If checkpoints are present under `checkpoints/`, the UI will offer them; otherwise it falls back to random opponents.
+
+Playground extras (not in core deps): `pip install fastapi uvicorn pydantic rich`.
 
 ## Training (First Run)
 
@@ -82,6 +113,8 @@ RUN_NAME=star ./scripts/train_gpu.sh --num-envs 1024 --rollout-steps 64 --total-
 Notes:
 - Keep `total_timesteps` divisible by `num_envs * rollout_steps` for clean updates.
 - For memory pressure, reduce `--rollout-steps` or `--history-window`.
+- Recurrent GRU + history buffer are enabled by default; disable with `--no-recurrent`.
+- Belief features and shaping rewards can be tuned via `--belief-*` and `--shaping-*` flags.
 
 ## Checkpoint Naming
 
@@ -133,6 +166,8 @@ CPU evaluation against a pool:
 ```bash
 python -m rl_poker.scripts.evaluate --pool-dir checkpoints/star --run-name star --episodes 200
 ```
+
+Metrics reported by `eval_gpu` include mean score, win rate, average rank, and Elo ratings.
 
 
 ## Utilities
