@@ -94,7 +94,9 @@ def _parse_heuristic_styles(styles: str) -> list[str]:
     return [s.strip() for s in styles.split(",") if s.strip()]
 
 
-def load_checkpoint(path: str, device: torch.device) -> tuple[object | None, dict[str, torch.Tensor]]:
+def load_checkpoint(
+    path: str, device: torch.device
+) -> tuple[object | None, dict[str, torch.Tensor]]:
     ckpt = torch.load(path, map_location=device, weights_only=False)
     if not isinstance(ckpt, dict):
         raise ValueError(f"Checkpoint at {path} is not a dict")
@@ -146,7 +148,12 @@ def evaluate_checkpoint(path: str, cfg: EvalConfig, device: torch.device) -> dic
         action_rank_norm = (action_ranks.float() / 12.0).unsqueeze(1)
         action_len_norm = (action_lengths.float() / max_action_length).unsqueeze(1)
         scalars = torch.cat(
-            [action_rank_norm, action_len_norm, action_is_exempt.unsqueeze(1), is_pass.unsqueeze(1)],
+            [
+                action_rank_norm,
+                action_len_norm,
+                action_is_exempt.unsqueeze(1),
+                is_pass.unsqueeze(1),
+            ],
             dim=1,
         )
         return torch.cat([player_onehot, type_onehot, scalars], dim=1)
@@ -154,9 +161,9 @@ def evaluate_checkpoint(path: str, cfg: EvalConfig, device: torch.device) -> dic
     def augment_obs(obs: torch.Tensor, state: GameState) -> torch.Tensor:
         B = obs.shape[0]
         p_idx = state.current_player
-        my_rank_counts = state.rank_counts.gather(
-            1, p_idx.view(B, 1, 1).expand(-1, 1, 13)
-        ).squeeze(1)
+        my_rank_counts = state.rank_counts.gather(1, p_idx.view(B, 1, 1).expand(-1, 1, 13)).squeeze(
+            1
+        )
         remaining_rank_counts = (4.0 - my_rank_counts.float() - public_played_counts).clamp(min=0)
 
         belief_list: list[torch.Tensor] = []
@@ -340,9 +347,7 @@ def evaluate_checkpoint(path: str, cfg: EvalConfig, device: torch.device) -> dic
                     players = state.current_player
                     opp_rank_logits[played, players[played]] *= cfg.belief_decay
                     evidence = action_counts[played] @ rank_affinity
-                    opp_rank_logits[played, players[played]] += (
-                        cfg.belief_play_bonus * evidence
-                    )
+                    opp_rank_logits[played, players[played]] += cfg.belief_play_bonus * evidence
 
             passed = actions == 0
             if passed.any() and cfg.belief_use_behavior:
@@ -354,9 +359,7 @@ def evaluate_checkpoint(path: str, cfg: EvalConfig, device: torch.device) -> dic
                     if envs.any():
                         prev_actions = state.prev_action[envs]
                         penalty = response_rank_weights[prev_actions] @ rank_affinity
-                        opp_rank_logits[envs, players[envs]] -= (
-                            cfg.belief_pass_penalty * penalty
-                        )
+                        opp_rank_logits[envs, players[envs]] -= cfg.belief_pass_penalty * penalty
 
             if history_cfg.enabled:
                 env_ids = torch.arange(cfg.num_envs, device=device)
@@ -462,7 +465,9 @@ def main():
     parser.add_argument("--pool-seed", type=int, default=42)
     parser.add_argument("--pool-no-random", action="store_true")
     parser.add_argument("--pool-no-heuristic", action="store_true")
-    parser.add_argument("--pool-heuristic-styles", type=str, default="conservative,aggressive,rush,counter,variance")
+    parser.add_argument(
+        "--pool-heuristic-styles", type=str, default="conservative,aggressive,rush,counter,variance"
+    )
     parser.add_argument("--snapshot-dir", type=str, default=None)
     parser.add_argument("--snapshot-glob", type=str, default="*_step_*.pt")
     parser.add_argument("--snapshot-max", type=int, default=8)

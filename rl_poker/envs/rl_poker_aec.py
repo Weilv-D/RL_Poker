@@ -282,16 +282,16 @@ class RLPokerAECEnv(AECEnv):
 
     def _was_dead_step(self, action: Optional[int]) -> None:
         """Handle step for a dead (terminated/truncated) agent.
-        
+
         This is called when an agent that has already terminated takes a step
         (typically with action=None to acknowledge termination).
         """
         agent = self.agent_selection
-        
+
         # Remove this agent from the active agents list
         if agent in self.agents:
             self.agents.remove(agent)
-        
+
         # Clear rewards for this agent after they've been received
         self.rewards[agent] = 0.0
 
@@ -301,7 +301,7 @@ class RLPokerAECEnv(AECEnv):
 
     def _handle_game_over(self) -> None:
         """Handle game over - assign final rewards.
-        
+
         Note: We do NOT clear self.agents here. Instead, we let all agents
         iterate one more time to receive their final rewards via last().
         The agents list is cleared when all agents have acknowledged their
@@ -318,7 +318,7 @@ class RLPokerAECEnv(AECEnv):
             self.rewards[agent] = float(scores.get(player_idx, 0))
             self._cumulative_rewards[agent] += self.rewards[agent]
             self.terminations[agent] = True
-        
+
         # Keep agents list intact so they can all receive their final rewards
         # via agent_iter -> last() -> done=True -> step(None)
 

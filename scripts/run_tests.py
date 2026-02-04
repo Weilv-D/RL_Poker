@@ -28,7 +28,7 @@ def patched_load_ep(self, group, name=None):
             ):
                 continue
             # Skip ROS/ament/launch plugins
-            if any(kw in ep.value.lower() for kw in ['ros', 'ament', 'launch']):
+            if any(kw in ep.value.lower() for kw in ["ros", "ament", "launch"]):
                 continue
             try:
                 plugin = ep.load()
@@ -42,9 +42,9 @@ def patched_load_ep(self, group, name=None):
 if __name__ == "__main__":
     # Apply patch before importing pytest
     pm.PluginManager.load_setuptools_entrypoints = patched_load_ep
-    
+
     import pytest
-    
+
     # Pass all command line args to pytest
-    args = sys.argv[1:] if len(sys.argv) > 1 else ['tests/', '-v', '--tb=short']
+    args = sys.argv[1:] if len(sys.argv) > 1 else ["tests/", "-v", "--tb=short"]
     sys.exit(pytest.main(args))

@@ -34,6 +34,7 @@ from rl_poker.moves.legal_moves import (
     PASS_MOVE,
 )
 
+
 class HeuristicAgent:
     """Agent that uses heuristic rules for decision-making.
 

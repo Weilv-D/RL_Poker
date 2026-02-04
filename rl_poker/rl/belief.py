@@ -63,7 +63,9 @@ def build_response_rank_weights(
         )
         valid_exempt = act_is_exempt & (act_std == prev_type) & higher_rank
 
-        valid_follow = torch.where(prev_is_exempt, valid_after_exempt, valid_standard | valid_exempt)
+        valid_follow = torch.where(
+            prev_is_exempt, valid_after_exempt, valid_standard | valid_exempt
+        )
 
         weights[start:end] = valid_follow.float() @ required_counts
 

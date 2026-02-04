@@ -29,7 +29,12 @@ import numpy as np
 from rl_poker.engine.game_state import GameState, NUM_PLAYERS
 from rl_poker.agents.random_agent import create_random_agent
 from rl_poker.agents.heuristic_agent import create_heuristic_agent
-from rl_poker.agents.policy_pool import PolicyPool, PooledPolicyAgent, create_policy_pool, PolicyProtocol
+from rl_poker.agents.policy_pool import (
+    PolicyPool,
+    PooledPolicyAgent,
+    create_policy_pool,
+    PolicyProtocol,
+)
 
 
 # Default K-factor for Elo updates
@@ -171,7 +176,9 @@ class EloTracker:
 
         history = data.get("rating_history")
         if isinstance(history, list):
-            tracker.rating_history = [list(map(float, row)) for row in history if isinstance(row, list)]
+            tracker.rating_history = [
+                list(map(float, row)) for row in history if isinstance(row, list)
+            ]
         else:
             tracker.rating_history = []
 

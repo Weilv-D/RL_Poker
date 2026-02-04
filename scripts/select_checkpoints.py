@@ -21,7 +21,9 @@ def main():
         default=None,
         help="Checkpoint directory containing eval_results.json",
     )
-    parser.add_argument("--metric", type=str, default="mean_score", choices=["mean_score", "win_rate", "avg_rank"])
+    parser.add_argument(
+        "--metric", type=str, default="mean_score", choices=["mean_score", "win_rate", "avg_rank"]
+    )
     parser.add_argument("--keep", type=int, default=5)
     parser.add_argument("--delete", action="store_true")
     parser.add_argument("--dry-run", action="store_true")

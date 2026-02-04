@@ -135,9 +135,7 @@ def train(config: TrainConfig):
     np.random.seed(config.seed)
 
     # Create environment
-    env = GPUPokerEnv(
-        config.num_envs, device, reveal_opponent_ranks=config.reveal_opponent_ranks
-    )
+    env = GPUPokerEnv(config.num_envs, device, reveal_opponent_ranks=config.reveal_opponent_ranks)
     # History feature setup
     num_action_types = int(env.mask_computer.action_types.max().item()) + 1
     max_action_length = int(env.mask_computer.action_lengths.max().item())
@@ -193,9 +191,9 @@ def train(config: TrainConfig):
     def augment_obs(obs: torch.Tensor, state: GameState) -> torch.Tensor:
         B = obs.shape[0]
         p_idx = state.current_player
-        my_rank_counts = state.rank_counts.gather(
-            1, p_idx.view(B, 1, 1).expand(-1, 1, 13)
-        ).squeeze(1)
+        my_rank_counts = state.rank_counts.gather(1, p_idx.view(B, 1, 1).expand(-1, 1, 13)).squeeze(
+            1
+        )
         remaining_rank_counts = (4.0 - my_rank_counts.float() - public_played_counts).clamp(min=0)
 
         other_p = (p_idx.view(B, 1) + other_offsets.view(1, 3)) % 4  # [B, 3]
@@ -268,6 +266,7 @@ def train(config: TrainConfig):
     # Logging
     checkpoint_root = os.path.abspath(config.checkpoint_dir)
     os.makedirs(checkpoint_root, exist_ok=True)
+
     def _sanitize_prefix(prefix: str) -> str:
         prefix = prefix.strip().replace(" ", "-")
         prefix = re.sub(r"[^A-Za-z0-9._-]", "_", prefix)
@@ -424,6 +423,7 @@ def train(config: TrainConfig):
                 shutil.copy2(ckpt_path, latest_path)
             except Exception:
                 pass
+
     start_time = time.time()
     sps = 0.0
 
@@ -565,17 +565,11 @@ def train(config: TrainConfig):
         return actions
 
     # Storage for rollout (reused each update)
-    obs_buf = torch.zeros(
-        config.rollout_steps, config.num_envs, augmented_obs_dim, device=device
-    )
-    act_buf = torch.zeros(
-        config.rollout_steps, config.num_envs, dtype=torch.long, device=device
-    )
+    obs_buf = torch.zeros(config.rollout_steps, config.num_envs, augmented_obs_dim, device=device)
+    act_buf = torch.zeros(config.rollout_steps, config.num_envs, dtype=torch.long, device=device)
     logp_buf = torch.zeros(config.rollout_steps, config.num_envs, device=device)
     rew_buf = torch.zeros(config.rollout_steps, config.num_envs, device=device)
-    done_buf = torch.zeros(
-        config.rollout_steps, config.num_envs, dtype=torch.bool, device=device
-    )
+    done_buf = torch.zeros(config.rollout_steps, config.num_envs, dtype=torch.bool, device=device)
     val_buf = torch.zeros(config.rollout_steps, config.num_envs, device=device)
     mask_buf = torch.zeros(
         config.rollout_steps, config.num_envs, env.num_actions, dtype=torch.bool, device=device
@@ -602,9 +596,7 @@ def train(config: TrainConfig):
         if config.use_recurrent:
             assert seq_buf is not None
             seq_buf.zero_()
-        last_step_idx = torch.full(
-            (config.num_envs,), -1, device=device, dtype=torch.long
-        )
+        last_step_idx = torch.full((config.num_envs,), -1, device=device, dtype=torch.long)
 
         with torch.inference_mode():
             # Collect rollout (one learner action per env per step)
@@ -683,7 +675,9 @@ def train(config: TrainConfig):
                     if history_config.enabled:
                         env_ids = pending.nonzero(as_tuple=False).squeeze(-1)
                         if env_ids.numel() > 0:
-                            feats = build_history_features(actions[env_ids], state.current_player[env_ids])
+                            feats = build_history_features(
+                                actions[env_ids], state.current_player[env_ids]
+                            )
                             history_buffer.push(feats, env_ids=env_ids)
 
                     passed = (actions == 0) & pending
@@ -779,7 +773,9 @@ def train(config: TrainConfig):
                     actions = select_opponent_actions(
                         actions, obs, action_mask, state.current_player, opponent_active
                     )
-                    new_state, rewards, dones = env.step(state, actions, active_mask=opponent_active)
+                    new_state, rewards, dones = env.step(
+                        state, actions, active_mask=opponent_active
+                    )
                     total_steps += int(opponent_active.sum().item())
 
                     played = (actions != 0) & opponent_active
@@ -811,7 +807,9 @@ def train(config: TrainConfig):
                     if history_config.enabled:
                         env_ids = opponent_active.nonzero(as_tuple=False).squeeze(-1)
                         if env_ids.numel() > 0:
-                            feats = build_history_features(actions[env_ids], state.current_player[env_ids])
+                            feats = build_history_features(
+                                actions[env_ids], state.current_player[env_ids]
+                            )
                             history_buffer.push(feats, env_ids=env_ids)
 
                     if dones.any():
@@ -964,7 +962,9 @@ def train(config: TrainConfig):
 
         # Save checkpoint
         if update % config.save_interval == 0:
-            ckpt_path = os.path.join(run_dir, f"{run_prefix}_{next_ckpt_id:03d}_step_{total_steps}.pt")
+            ckpt_path = os.path.join(
+                run_dir, f"{run_prefix}_{next_ckpt_id:03d}_step_{total_steps}.pt"
+            )
             torch.save(
                 {
                     "network": network.state_dict(),
@@ -984,7 +984,10 @@ def train(config: TrainConfig):
         # Add snapshot to pool
         if config.pool_add_interval > 0 and update % config.pool_add_interval == 0:
             pool.add_snapshot_if_stronger(
-                f"snapshot_{total_steps}", network.state_dict(), added_step=total_steps, candidate_ev=0.0
+                f"snapshot_{total_steps}",
+                network.state_dict(),
+                added_step=total_steps,
+                candidate_ev=0.0,
             )
 
     # Final save
@@ -1008,6 +1011,7 @@ def train(config: TrainConfig):
     print(f"Total games: {total_games}")
     print(f"Final SPS: {sps:.0f}")
     print(f"Saved: {final_path}")
+
 
 def main():
     parser = argparse.ArgumentParser(description="Train RL Poker agent with PPO")

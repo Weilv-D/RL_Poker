@@ -102,7 +102,9 @@ def test_gpu_mask_leading_moves_are_cpu_legal():
         can_pass = torch.tensor([False], device=device)
         cards_remaining = torch.tensor([len(hand)], device=device)
         first_move = torch.tensor([False], device=device)
-        has_h3 = torch.tensor([any(c.rank == Rank.THREE and c.suit == Suit.HEART for c in hand)], device=device)
+        has_h3 = torch.tensor(
+            [any(c.rank == Rank.THREE and c.suit == Suit.HEART for c in hand)], device=device
+        )
 
         mask = mask_comp.compute_mask_batched(
             hand_cards.unsqueeze(0),
@@ -145,7 +147,9 @@ def test_gpu_mask_following_single_is_cpu_legal():
         can_pass = torch.tensor([True], device=device)
         cards_remaining = torch.tensor([len(hand)], device=device)
         first_move = torch.tensor([False], device=device)
-        has_h3 = torch.tensor([any(c.rank == Rank.THREE and c.suit == Suit.HEART for c in hand)], device=device)
+        has_h3 = torch.tensor(
+            [any(c.rank == Rank.THREE and c.suit == Suit.HEART for c in hand)], device=device
+        )
 
         mask = mask_comp.compute_mask_batched(
             hand_cards.unsqueeze(0),
@@ -166,7 +170,9 @@ def test_gpu_mask_following_single_is_cpu_legal():
         )[0]
 
         legal_idxs = torch.where(mask)[0].tolist()[:20]
-        context = MoveContext(previous_move=prev_move, is_tail_hand=False, previous_used_exemption=False)
+        context = MoveContext(
+            previous_move=prev_move, is_tail_hand=False, previous_used_exemption=False
+        )
         for idx in legal_idxs:
             move = _gpu_action_to_move(idx, hand, mask_comp)
             assert move is not None

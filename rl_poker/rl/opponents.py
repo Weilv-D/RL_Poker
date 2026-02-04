@@ -277,7 +277,9 @@ class OpponentPool:
             network.load_state_dict(state_dict)
             policy = RecurrentPolicyOpponent(network)
         else:
-            network = PolicyNetwork(self.obs_dim, self.num_actions, self.hidden_size).to(self.device)
+            network = PolicyNetwork(self.obs_dim, self.num_actions, self.hidden_size).to(
+                self.device
+            )
             network.load_state_dict(state_dict)
             policy = PolicyNetworkOpponent(network)
 

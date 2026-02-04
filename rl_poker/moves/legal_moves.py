@@ -159,20 +159,28 @@ def enumerate_all_hands(cards: List[Card]) -> List[Move]:
         # Find all consecutive runs
         for start_idx in range(len(sequence_ranks_sorted)):
             for end_idx in range(start_idx + 4, len(sequence_ranks_sorted)):
-                run_ranks = sequence_ranks_sorted[start_idx:end_idx + 1]
+                run_ranks = sequence_ranks_sorted[start_idx : end_idx + 1]
                 # Check if consecutive
-                if all(run_ranks[i].value + 1 == run_ranks[i+1].value for i in range(len(run_ranks) - 1)):
+                if all(
+                    run_ranks[i].value + 1 == run_ranks[i + 1].value
+                    for i in range(len(run_ranks) - 1)
+                ):
                     # Generate all combinations: pick 1 card from each rank
                     _add_straight_combos(moves, cards_by_rank, run_ranks)
 
     # === Consecutive Pairs (3+ pairs, 3-K only) ===
-    pair_ranks = [r for r in rank_counts.keys() if rank_counts[r] >= 2 and is_valid_sequence_rank(r)]
+    pair_ranks = [
+        r for r in rank_counts.keys() if rank_counts[r] >= 2 and is_valid_sequence_rank(r)
+    ]
     if len(pair_ranks) >= 3:
         pair_ranks_sorted = sorted(pair_ranks, key=lambda r: r.value)
         for start_idx in range(len(pair_ranks_sorted)):
             for end_idx in range(start_idx + 2, len(pair_ranks_sorted)):
-                run_ranks = pair_ranks_sorted[start_idx:end_idx + 1]
-                if all(run_ranks[i].value + 1 == run_ranks[i+1].value for i in range(len(run_ranks) - 1)):
+                run_ranks = pair_ranks_sorted[start_idx : end_idx + 1]
+                if all(
+                    run_ranks[i].value + 1 == run_ranks[i + 1].value
+                    for i in range(len(run_ranks) - 1)
+                ):
                     _add_consecutive_pair_combos(moves, cards_by_rank, run_ranks)
 
     # === Three Plus Two (3+2) ===
@@ -186,8 +194,12 @@ def enumerate_all_hands(cards: List[Card]) -> List[Move]:
                     all_cards = frozenset(triple) | frozenset(kicker)
                     kicker_ranks = [c.rank for c in kicker]
                     secondary = max(kicker_ranks, key=lambda r: r.value)
-                    hand = Hand(hand_type=HandType.THREE_PLUS_TWO, cards=all_cards, 
-                               main_rank=main_rank, secondary_rank=secondary)
+                    hand = Hand(
+                        hand_type=HandType.THREE_PLUS_TWO,
+                        cards=all_cards,
+                        main_rank=main_rank,
+                        secondary_rank=secondary,
+                    )
                     moves.append(Move(move_type=MoveType.PLAY, cards=all_cards, hand=hand))
 
     # === Four Plus Three (4+3) ===
@@ -201,8 +213,12 @@ def enumerate_all_hands(cards: List[Card]) -> List[Move]:
                     all_cards = frozenset(quad) | frozenset(kicker)
                     kicker_ranks = [c.rank for c in kicker]
                     secondary = max(kicker_ranks, key=lambda r: r.value)
-                    hand = Hand(hand_type=HandType.FOUR_PLUS_THREE, cards=all_cards,
-                               main_rank=main_rank, secondary_rank=secondary)
+                    hand = Hand(
+                        hand_type=HandType.FOUR_PLUS_THREE,
+                        cards=all_cards,
+                        main_rank=main_rank,
+                        secondary_rank=secondary,
+                    )
                     moves.append(Move(move_type=MoveType.PLAY, cards=all_cards, hand=hand))
 
     return moves
@@ -211,7 +227,7 @@ def enumerate_all_hands(cards: List[Card]) -> List[Move]:
 def _add_straight_combos(moves: List[Move], cards_by_rank: dict, run_ranks: List[Rank]):
     """Helper to add all straight combinations for a run of consecutive ranks."""
     from itertools import product
-    
+
     card_options = [cards_by_rank[r] for r in run_ranks]
     for combo in product(*card_options):
         all_cards = frozenset(combo)
@@ -223,13 +239,13 @@ def _add_straight_combos(moves: List[Move], cards_by_rank: dict, run_ranks: List
 def _add_consecutive_pair_combos(moves: List[Move], cards_by_rank: dict, run_ranks: List[Rank]):
     """Helper to add all consecutive pair combinations for a run of consecutive ranks."""
     from itertools import product
-    
+
     # For each rank, need to pick 2 cards
     pair_options = []
     for r in run_ranks:
         rank_cards = cards_by_rank[r]
         pair_options.append(list(combinations(rank_cards, 2)))
-    
+
     for combo in product(*pair_options):
         all_cards = frozenset(c for pair in combo for c in pair)
         highest_rank = run_ranks[-1]

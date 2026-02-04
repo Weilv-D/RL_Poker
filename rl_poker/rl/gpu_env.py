@@ -440,7 +440,9 @@ class GPUPokerEnv:
         first_active = active.float().argmax(dim=1)
         new_current = torch.where(all_others_passed & lead_active, new_lead_player, new_current)
         new_current = torch.where(all_others_passed & ~lead_active, first_active, new_current)
-        new_lead_player = torch.where(all_others_passed & ~lead_active, first_active, new_lead_player)
+        new_lead_player = torch.where(
+            all_others_passed & ~lead_active, first_active, new_lead_player
+        )
 
         # If game is over, keep current player at the last actor (matches CPU engine)
         new_current = torch.where(game_over, current_player, new_current)
@@ -513,7 +515,9 @@ class GPUPokerEnv:
             ),
             prev_player=merge(state.prev_player, fresh_state.prev_player, dones),
             lead_player=merge(state.lead_player, fresh_state.lead_player, dones),
-            consecutive_passes=merge(state.consecutive_passes, fresh_state.consecutive_passes, dones),
+            consecutive_passes=merge(
+                state.consecutive_passes, fresh_state.consecutive_passes, dones
+            ),
             has_passed=merge(state.has_passed, fresh_state.has_passed, dones),
             has_finished=merge(state.has_finished, fresh_state.has_finished, dones),
             finish_rank=merge(state.finish_rank, fresh_state.finish_rank, dones),
