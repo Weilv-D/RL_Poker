@@ -15,13 +15,14 @@ English | [中文](README_CN.md)
 - Behavior-based belief features paired with GRU memory
 - Automated GPU evaluation with checkpoint pruning
 
-## Modules at a Glance
+## Project Layout
 
 - `rl_poker/rl`: GPU env, PPO, opponents, belief, memory
 - `rl_poker/engine`: CPU rules engine for correctness
 - `rl_poker/envs`: PettingZoo AEC wrapper
 - `rl_poker/moves` + `rl_poker/rules`: legal moves and hand logic
 - `rl_poker/agents`: random, heuristic, policy pool
+- `scripts/`: training/evaluation helpers and utilities
 
 ## Quick Start
 
@@ -31,27 +32,27 @@ source .venv/bin/activate
 pip install -e .
 ```
 
-```bash
-python -m rl_poker.scripts.train --run-name star --total-timesteps 100000
-```
+## Training (First Run)
 
-```bash
-python -m rl_poker.scripts.eval_gpu --checkpoint checkpoints/star/star_001_step_100000.pt --episodes 200
-```
-
-## Training
-
-Default GPU training preset (1024 envs) is embedded in the script:
-
-```bash
-./scripts/train_gpu.sh
-```
-
-Recommended (explicit run name):
+Recommended GPU preset:
 
 ```bash
 RUN_NAME=star ./scripts/train_gpu.sh --quality
 ```
+
+Custom short run (fast smoke test):
+
+```bash
+RUN_NAME=star ./scripts/train_gpu.sh --total-timesteps 1000000 --num-envs 256 --rollout-steps 64
+```
+
+Resume from the latest checkpoint:
+
+```bash
+python -m rl_poker.scripts.train --resume checkpoints/star/latest.pt
+```
+
+## Training
 
 Override any parameter on the command line:
 
@@ -63,7 +64,7 @@ Notes:
 - Keep `total_timesteps` divisible by `num_envs * rollout_steps` for clean updates.
 - For memory pressure, reduce `--rollout-steps` or `--history-window`.
 
-### Checkpoint Naming & Layout
+## Checkpoint Naming
 
 When you pass `--run-name <name>`, checkpoints are saved under:
 
@@ -78,23 +79,17 @@ checkpoints/star/star_001_step_14068672.pt
 checkpoints/garlic/garlic_002_step_55498804.pt
 ```
 
-The `###` increments by save order (not by step). Resuming from a checkpoint continues numbering from the latest in that folder.
+The `###` increments by save order (not by step). Resuming from a checkpoint continues numbering from the latest in that folder. A `latest.pt` symlink is kept in each run folder.
 
-### Logs
+## Logs
 
-Training logs are written to:
+Training logs:
 
 ```
 runs/<run-name>/<run-name>_###.log
 ```
 
-Example:
-
-```
-runs/star/star_001.log
-```
-
-Evaluation logs (GPU/CPU) are written to:
+Evaluation logs (GPU/CPU):
 
 ```
 runs/<run-name>/<run-name>_eval_###.log
@@ -102,17 +97,24 @@ runs/<run-name>/<run-name>_eval_###.log
 
 ## Evaluation
 
-```bash
-python -m rl_poker.scripts.eval_gpu --checkpoint checkpoints/star/star_001_step_14068672.pt --episodes 200
-```
+Evaluate the latest checkpoint:
 
 ```bash
-python -m rl_poker.scripts.eval_gpu --checkpoint-dir checkpoints/star --episodes 200
+python -m rl_poker.scripts.eval_gpu --checkpoint checkpoints/star/latest.pt --episodes 200 --run-name star
 ```
+
+Evaluate all checkpoints in a run:
+
+```bash
+python -m rl_poker.scripts.eval_gpu --checkpoint-dir checkpoints/star --episodes 200 --run-name star
+```
+
+CPU evaluation against a pool:
 
 ```bash
 python -m rl_poker.scripts.evaluate --pool-dir checkpoints/star --run-name star --episodes 200
 ```
+
 
 ## Human vs AI (TUI)
 
@@ -128,7 +130,7 @@ Tips:
 ## Utilities
 
 - `./scripts/train_gpu.sh` preset GPU training
-- `python scripts/select_checkpoints.py` prune checkpoints
+- `python scripts/select_checkpoints.py --run-name star` keep top checkpoints from eval json
 - `python scripts/run_tests.py` run pytest without ROS plugin interference
 
 ## Testing
