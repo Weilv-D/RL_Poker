@@ -114,17 +114,6 @@ CPU 评估（对手池）：
 python -m rl_poker.scripts.evaluate --pool-dir checkpoints/star --run-name star --episodes 200
 ```
 
-## 人机对弈（TUI）
-
-```bash
-python scripts/play_human_vs_ai.py --tui
-```
-
-提示：
-- `Enter` / `p` / `pass` = 过牌
-- `0 1 2` = 按手牌序号出牌
-- `3H 4D` = 按牌面出牌
-
 ## 工具脚本
 
 - `./scripts/train_gpu.sh` GPU 训练预设

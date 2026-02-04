@@ -114,17 +114,6 @@ python -m rl_poker.scripts.evaluate --pool-dir checkpoints/star --run-name star 
 ```
 
 
-## Human vs AI (TUI)
-
-```bash
-python scripts/play_human_vs_ai.py --tui
-```
-
-Tips:
-- `Enter` / `p` / `pass` = pass
-- `0 1 2` = play by hand indices
-- `3H 4D` = play by card names
-
 ## Utilities
 
 - `./scripts/train_gpu.sh` preset GPU training
