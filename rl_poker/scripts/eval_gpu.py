@@ -82,6 +82,7 @@ class EvalConfig:
     belief_play_bonus: float = 0.5
     belief_pass_penalty: float = 0.3
     belief_temp: float = 2.0
+    progress_interval: int = 50
 
 
 def _parse_heuristic_styles(styles: str) -> list[str]:
@@ -228,19 +229,82 @@ def evaluate_checkpoint(path: str, cfg: EvalConfig, device: torch.device) -> dic
     if not pool.entries:
         raise ValueError("Opponent pool is empty. Enable random/heuristic or snapshot dir.")
 
-    opponent_ids = pool.sample_opponents(cfg.num_envs, seats=3)
+    opponent_ids = torch.as_tensor(
+        pool.sample_opponents(cfg.num_envs, seats=3), device=device, dtype=torch.long
+    )
 
     state = env.reset()
     public_played_counts.zero_()
     if history_cfg.enabled:
         history_buffer.reset_envs(torch.arange(cfg.num_envs, device=device))
 
-    scores = []
-    ranks = []
+    scores: list[float] = []
+    ranks: list[int] = []
     elo_ratings = [1000.0] * 4
     episodes_done = 0
+    progress_steps: list[int] = []
+    progress_mean_score: list[float] = []
+    progress_win_rate: list[float] = []
+    progress_avg_rank: list[float] = []
+    progress_elo: list[list[float]] = []
 
-    with torch.no_grad():
+    opp_games = np.zeros(len(pool.entries), dtype=np.int64)
+    opp_score_sum = np.zeros(len(pool.entries), dtype=np.float64)
+    opp_rank_sum = np.zeros(len(pool.entries), dtype=np.float64)
+
+    def maybe_record_progress() -> None:
+        if cfg.episodes <= 0:
+            return
+        if episodes_done == 0:
+            return
+        if episodes_done % cfg.progress_interval != 0 and episodes_done != cfg.episodes:
+            return
+        recent_scores = scores[-cfg.progress_interval :] if scores else []
+        recent_ranks = ranks[-cfg.progress_interval :] if ranks else []
+        if recent_scores:
+            mean_score = float(np.mean(recent_scores))
+        else:
+            mean_score = 0.0
+        if recent_ranks:
+            win_rate = float(np.mean(np.array(recent_ranks) <= 2) * 100.0)
+            avg_rank = float(np.mean(recent_ranks))
+        else:
+            win_rate = 0.0
+            avg_rank = 0.0
+        progress_steps.append(episodes_done)
+        progress_mean_score.append(mean_score)
+        progress_win_rate.append(win_rate)
+        progress_avg_rank.append(avg_rank)
+        progress_elo.append([round(r, 2) for r in elo_ratings])
+
+    def select_opponent_actions(
+        actions: torch.Tensor,
+        obs: torch.Tensor,
+        action_mask: torch.Tensor,
+        current_player: torch.Tensor,
+    ) -> torch.Tensor:
+        for player_id in (1, 2, 3):
+            env_mask = current_player == player_id
+            if not env_mask.any():
+                continue
+            envs = env_mask.nonzero(as_tuple=False).squeeze(-1)
+            opp_ids = opponent_ids[envs, player_id - 1]
+            unique_ids = torch.unique(opp_ids)
+            for opp_id in unique_ids:
+                subset_mask = opp_ids == opp_id
+                if not subset_mask.any():
+                    continue
+                idx = envs[subset_mask]
+                policy = pool.entries[int(opp_id.item())].policy
+                if cfg.use_recurrent:
+                    seq = history_buffer.get_sequence(idx)
+                    assert seq is not None
+                    actions[idx] = policy.select_actions(obs[idx], action_mask[idx], seq=seq)
+                else:
+                    actions[idx] = policy.select_actions(obs[idx], action_mask[idx])
+        return actions
+
+    with torch.inference_mode():
         while episodes_done < cfg.episodes:
             obs, action_mask = env.get_obs_and_mask(state)
             obs = augment_obs(obs, state)
@@ -261,25 +325,7 @@ def evaluate_checkpoint(path: str, cfg: EvalConfig, device: torch.device) -> dic
 
             opponent_envs = state.current_player != 0
             if opponent_envs.any():
-                current_cpu = state.current_player.cpu().numpy()
-                active_cpu = opponent_envs.cpu().numpy()
-                for player_id in (1, 2, 3):
-                    envs = np.where(active_cpu & (current_cpu == player_id))[0]
-                    if envs.size == 0:
-                        continue
-                    opp_ids = opponent_ids[envs, player_id - 1]
-                    for opp_id in np.unique(opp_ids):
-                        subset = envs[opp_ids == opp_id]
-                        if subset.size == 0:
-                            continue
-                        idx = torch.tensor(subset, device=device, dtype=torch.long)
-                        policy = pool.entries[int(opp_id)].policy
-                        if cfg.use_recurrent:
-                            seq = history_buffer.get_sequence(idx)
-                            assert seq is not None
-                            actions[idx] = policy.select_actions(obs[idx], action_mask[idx], seq=seq)
-                        else:
-                            actions[idx] = policy.select_actions(obs[idx], action_mask[idx])
+                actions = select_opponent_actions(actions, obs, action_mask, state.current_player)
 
             new_state, rewards, dones = env.step(state, actions)
 
@@ -316,18 +362,34 @@ def evaluate_checkpoint(path: str, cfg: EvalConfig, device: torch.device) -> dic
 
             if dones.any():
                 done_idx = dones.nonzero().squeeze(-1)
-                scores.extend(rewards[done_idx, 0].detach().cpu().numpy().tolist())
-                batch_ranks = new_state.finish_rank[done_idx].detach().cpu().numpy().tolist()
-                ranks.extend([r[0] for r in batch_ranks])
-                for r in batch_ranks:
+                batch_scores = rewards[done_idx, 0].detach().cpu().numpy()
+                scores.extend(batch_scores.tolist())
+                batch_ranks_full = new_state.finish_rank[done_idx].detach().cpu().numpy()
+                batch_ranks = [r[0] for r in batch_ranks_full]
+                ranks.extend(batch_ranks)
+                for r in batch_ranks_full:
                     elo_ratings = update_elo_ratings(elo_ratings, r, k_factor=cfg.elo_k)
                 episodes_done += len(done_idx)
+
+                opp_ids_done = opponent_ids[done_idx].detach().cpu().numpy()
+                for i in range(opp_ids_done.shape[0]):
+                    for seat in range(opp_ids_done.shape[1]):
+                        oid = int(opp_ids_done[i, seat])
+                        opp_games[oid] += 1
+                        opp_score_sum[oid] += float(batch_scores[i])
+                        opp_rank_sum[oid] += float(batch_ranks[i])
+
+                maybe_record_progress()
                 public_played_counts[done_idx] = 0.0
                 opp_rank_logits[done_idx] = 0.0
                 if history_cfg.enabled:
                     history_buffer.reset_envs(done_idx)
                 state = env.reset_done_envs(new_state, dones)
-                opponent_ids[done_idx.cpu().numpy()] = pool.sample_opponents(len(done_idx), seats=3)
+                opponent_ids[done_idx] = torch.as_tensor(
+                    pool.sample_opponents(len(done_idx), seats=3),
+                    device=device,
+                    dtype=torch.long,
+                )
             else:
                 state = new_state
 
@@ -335,14 +397,42 @@ def evaluate_checkpoint(path: str, cfg: EvalConfig, device: torch.device) -> dic
     ranks = np.array(ranks[: cfg.episodes], dtype=np.int32)
     win_rate = np.mean(ranks <= 2) * 100 if ranks.size > 0 else 0.0
     avg_rank = np.mean(ranks) if ranks.size > 0 else 0.0
+    win_rate_top1 = np.mean(ranks == 1) * 100 if ranks.size > 0 else 0.0
+    rank_hist = [int((ranks == i).sum()) for i in range(1, 5)] if ranks.size > 0 else [0, 0, 0, 0]
+
+    opp_breakdown = []
+    for idx, entry in enumerate(pool.entries):
+        games = int(opp_games[idx])
+        opp_breakdown.append(
+            {
+                "name": entry.name,
+                "games": games,
+                "avg_score": float(opp_score_sum[idx] / games) if games > 0 else 0.0,
+                "avg_rank": float(opp_rank_sum[idx] / games) if games > 0 else 0.0,
+                "protected": entry.protected,
+            }
+        )
 
     return {
         "checkpoint": str(path),
         "episodes": cfg.episodes,
         "mean_score": float(scores.mean()) if scores.size > 0 else 0.0,
         "win_rate": float(win_rate),
+        "win_rate_top1": float(win_rate_top1),
         "avg_rank": float(avg_rank),
+        "score_std": float(scores.std()) if scores.size > 0 else 0.0,
+        "score_min": float(scores.min()) if scores.size > 0 else 0.0,
+        "score_max": float(scores.max()) if scores.size > 0 else 0.0,
+        "rank_hist": rank_hist,
         "elo": [round(r, 1) for r in elo_ratings],
+        "progress": {
+            "episodes": progress_steps,
+            "mean_score": progress_mean_score,
+            "win_rate": progress_win_rate,
+            "avg_rank": progress_avg_rank,
+            "elo": progress_elo,
+        },
+        "opponent_breakdown": opp_breakdown,
     }
 
 
@@ -354,6 +444,8 @@ def main():
     parser.add_argument("--output-json", type=str, default=None)
     parser.add_argument("--episodes", type=int, default=100)
     parser.add_argument("--num-envs", type=int, default=128)
+    parser.add_argument("--progress-interval", type=int, default=50)
+    parser.add_argument("--plot", type=str, default=None, help="Save plot image (png/svg)")
     parser.add_argument("--no-recurrent", action="store_true")
     parser.add_argument("--history-window", type=int, default=16)
     parser.add_argument("--reveal-opponent-ranks", action="store_true")
@@ -403,6 +495,7 @@ def main():
         belief_play_bonus=args.belief_play_bonus,
         belief_pass_penalty=args.belief_pass_penalty,
         belief_temp=args.belief_temp,
+        progress_interval=args.progress_interval,
     )
 
     results = []
@@ -429,9 +522,63 @@ def main():
         print(f"Checkpoint: {res['checkpoint']}")
         print(f"Episodes: {res['episodes']}")
         print(f"Mean score: {res['mean_score']:.3f}")
+        print(f"Win rate (top1): {res.get('win_rate_top1', 0.0):.1f}%")
         print(f"Win rate (top2): {res['win_rate']:.1f}%")
         print(f"Average rank: {res['avg_rank']:.2f}")
+        print(f"Score std: {res.get('score_std', 0.0):.3f}")
         print(f"Elo (seat0/1/2/3): {res['elo']}")
+
+    if args.plot:
+        try:
+            import matplotlib.pyplot as plt
+        except Exception as exc:
+            print(f"Plot skipped (matplotlib not available): {exc}")
+            return
+
+        for res in results:
+            fig, axes = plt.subplots(2, 2, figsize=(10, 8))
+            fig.suptitle(Path(res["checkpoint"]).name)
+
+            # Rank histogram
+            rank_hist = res.get("rank_hist", [0, 0, 0, 0])
+            axes[0, 0].bar([1, 2, 3, 4], rank_hist, color="#4C78A8")
+            axes[0, 0].set_title("Rank Distribution")
+            axes[0, 0].set_xlabel("Rank")
+            axes[0, 0].set_ylabel("Count")
+
+            # Score summary
+            mean_score = res.get("mean_score", 0.0)
+            std_score = res.get("score_std", 0.0)
+            axes[0, 1].bar([0], [mean_score], color="#72B7B2", width=0.6)
+            axes[0, 1].errorbar([0], [mean_score], yerr=[std_score], color="black", capsize=6)
+            axes[0, 1].set_title("Score Mean ± Std")
+            axes[0, 1].set_xticks([0])
+            axes[0, 1].set_xticklabels(["score"])
+
+            # Progress curves
+            progress = res.get("progress", {})
+            ep = progress.get("episodes", [])
+            mean_score = progress.get("mean_score", [])
+            win_rate = progress.get("win_rate", [])
+            axes[1, 0].plot(ep, mean_score, label="Mean Score", color="#54A24B")
+            axes[1, 0].set_title("Mean Score (Progress)")
+            axes[1, 0].set_xlabel("Episodes")
+            axes[1, 0].set_ylabel("Mean Score")
+
+            axes[1, 1].plot(ep, win_rate, label="Win% (Top2)", color="#E45756")
+            axes[1, 1].set_title("Win Rate (Progress)")
+            axes[1, 1].set_xlabel("Episodes")
+            axes[1, 1].set_ylabel("Win%")
+
+            fig.tight_layout(rect=[0, 0.03, 1, 0.95])
+            plot_path = Path(args.plot)
+            if len(results) > 1:
+                plot_path = plot_path.with_name(
+                    plot_path.stem + "_" + Path(res["checkpoint"]).stem + plot_path.suffix
+                )
+            fig.savefig(plot_path)
+            plt.close(fig)
+            print(f"Saved plot to {plot_path}")
 
 
 if __name__ == "__main__":
