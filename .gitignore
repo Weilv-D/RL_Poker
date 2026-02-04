@@ -24,7 +24,6 @@ checkpoints/
 *.tfevents.*
 
 # Tooling / local
-scripts/play_human_vs_ai.py
-web/
+playground/
 # OS
 .DS_Store
